@@ -32,8 +32,12 @@ import {
   Trash2,
   History,
   RotateCcw,
+  Download,
+  FileText,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import html2canvas from "html2canvas";
+import { jsPDF } from "jspdf";
 
 /**
  * GitHub Commit Analyzer - Multi-Developer Version
@@ -250,6 +254,12 @@ export default function GitHubCommitAnalyzer() {
   const [searchHistory, setSearchHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
 
+  // PDF export state
+  const [exportingPDF, setExportingPDF] = useState(false);
+  const [exportingSinglePDF, setExportingSinglePDF] = useState({}); // { [devId]: boolean }
+  const reportRef = useRef(null);
+  const singleReportRefs = useRef({}); // { [devId]: ref }
+
   // Load history and dark mode preference on mount (client-side only)
   useEffect(() => {
     setSearchHistory(loadHistory());
@@ -402,6 +412,337 @@ export default function GitHubCommitAnalyzer() {
       if (prev.length >= MAX_DEVELOPERS) return prev;
       return [...prev, newDev];
     });
+  };
+
+  // CSV Export function
+  const exportToCSV = () => {
+    if (resultsArray.length === 0) return;
+
+    // Define CSV headers
+    const headers = [
+      "Owner",
+      "Repository",
+      "Experience Level",
+      "Experience Score",
+      "Total Commits",
+      "On-Time Commits",
+      "Late Commits",
+      "On-Time Percentage",
+      "Message Quality Score",
+      "Consistency Score",
+      "Average Commit Size (lines)",
+      "Total Lines Added",
+      "Total Lines Deleted",
+      "Net Lines Changed",
+      "Top File Types"
+    ];
+
+    // Generate CSV rows
+    const rows = resultsArray.map(r => [
+      r.owner,
+      r.repo,
+      r.experienceLevel.level,
+      r.experienceLevel.score,
+      r.totalCommits,
+      r.onTimeCount,
+      r.lateCount,
+      `${r.onTimePercentage}%`,
+      r.messageQualityScore,
+      r.consistencyScore,
+      r.avgCommitSize,
+      r.totalLinesAdded,
+      r.totalLinesDeleted,
+      r.totalLinesAdded - r.totalLinesDeleted,
+      r.fileTypes.map(f => f.name).slice(0, 5).join("; ")
+    ]);
+
+    // Escape CSV values (handle commas, quotes, newlines)
+    const escapeCSV = (value) => {
+      const str = String(value);
+      if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    // Build CSV content
+    const csvContent = [
+      headers.map(escapeCSV).join(","),
+      ...rows.map(row => row.map(escapeCSV).join(","))
+    ].join("\n");
+
+    // Create blob and download
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `github-commit-analysis-${new Date().toISOString().split("T")[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Export single developer to CSV
+  const exportSingleToCSV = (r) => {
+    const headers = [
+      "Metric",
+      "Value"
+    ];
+
+    const rows = [
+      ["Owner", r.owner],
+      ["Repository", r.repo],
+      ["Experience Level", r.experienceLevel.level],
+      ["Experience Score", r.experienceLevel.score],
+      ["Total Commits", r.totalCommits],
+      ["On-Time Commits", r.onTimeCount],
+      ["Late Commits", r.lateCount],
+      ["On-Time Percentage", `${r.onTimePercentage}%`],
+      ["Message Quality Score", r.messageQualityScore],
+      ["Consistency Score", r.consistencyScore],
+      ["Average Commit Size (lines)", r.avgCommitSize],
+      ["Total Lines Added", r.totalLinesAdded],
+      ["Total Lines Deleted", r.totalLinesDeleted],
+      ["Net Lines Changed", r.totalLinesAdded - r.totalLinesDeleted],
+      [""],
+      ["File Type Distribution"],
+      ...r.fileTypes.map(f => [f.name, f.value]),
+      [""],
+      ["Commit Size Distribution"],
+      ...r.commitSizeDistribution.map(s => [s.range, s.count]),
+      [""],
+      ["Commits by Weekday"],
+      ...r.weekdayData.map(d => [d.day, d.commits]),
+      [""],
+      ["Hourly Distribution"],
+      ...r.hourlyData.map(h => [h.hour, h.commits])
+    ];
+
+    const escapeCSV = (value) => {
+      const str = String(value);
+      if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const csvContent = [
+      headers.map(escapeCSV).join(","),
+      ...rows.map(row => row.map(escapeCSV).join(","))
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `${r.owner}-${r.repo}-analysis-${new Date().toISOString().split("T")[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // PDF Export function for all developers
+  const exportToPDF = async () => {
+    if (!reportRef.current || resultsArray.length === 0) return;
+
+    setExportingPDF(true);
+
+    try {
+      // Temporarily expand all details for full capture
+      const previousExpanded = { ...expandedDetails };
+      const allExpanded = {};
+      resultsArray.forEach(r => { allExpanded[r.devId] = true; });
+      setExpandedDetails(allExpanded);
+
+      // Wait for animations to complete
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      const element = reportRef.current;
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: dark ? "#09090b" : "#ffffff",
+        windowWidth: element.scrollWidth,
+        windowHeight: element.scrollHeight,
+      });
+
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+      });
+
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = canvas.width;
+      const imgHeight = canvas.height;
+      const ratio = Math.min(pdfWidth / imgWidth, pdfHeight / imgHeight);
+      const imgX = (pdfWidth - imgWidth * ratio) / 2;
+
+      // Calculate how many pages we need
+      const scaledHeight = imgHeight * ratio;
+      const pageHeight = pdfHeight - 20; // Leave margin
+      let heightLeft = scaledHeight;
+      let page = 0;
+
+      // Add title on first page
+      pdf.setFontSize(16);
+      pdf.setTextColor(dark ? 255 : 0);
+      pdf.text("GitHub Commit Analysis Report", pdfWidth / 2, 10, { align: "center" });
+      pdf.setFontSize(10);
+      pdf.text(`Generated: ${new Date().toLocaleString()}`, pdfWidth / 2, 16, { align: "center" });
+
+      // Add image across multiple pages if needed
+      while (heightLeft > 0) {
+        if (page > 0) {
+          pdf.addPage();
+        }
+
+        const sourceY = page * (pageHeight / ratio);
+        const sourceHeight = Math.min(pageHeight / ratio, imgHeight - sourceY);
+
+        if (sourceHeight > 0) {
+          // Create a temporary canvas for this page section
+          const pageCanvas = document.createElement("canvas");
+          pageCanvas.width = imgWidth;
+          pageCanvas.height = sourceHeight;
+          const ctx = pageCanvas.getContext("2d");
+          ctx.drawImage(
+            canvas,
+            0, sourceY,
+            imgWidth, sourceHeight,
+            0, 0,
+            imgWidth, sourceHeight
+          );
+
+          const pageImgData = pageCanvas.toDataURL("image/png");
+          pdf.addImage(
+            pageImgData,
+            "PNG",
+            imgX,
+            page === 0 ? 20 : 10,
+            imgWidth * ratio,
+            sourceHeight * ratio
+          );
+        }
+
+        heightLeft -= pageHeight;
+        page++;
+      }
+
+      pdf.save(`github-commit-analysis-${new Date().toISOString().split("T")[0]}.pdf`);
+
+      // Restore previous expanded state
+      setExpandedDetails(previousExpanded);
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      alert("Failed to generate PDF. Please try again.");
+    } finally {
+      setExportingPDF(false);
+    }
+  };
+
+  // PDF Export function for single developer
+  const exportSingleToPDF = async (r) => {
+    const refElement = singleReportRefs.current[r.devId];
+    if (!refElement) return;
+
+    setExportingSinglePDF(prev => ({ ...prev, [r.devId]: true }));
+
+    try {
+      // Ensure details are expanded
+      const wasExpanded = expandedDetails[r.devId];
+      if (!wasExpanded) {
+        setExpandedDetails(prev => ({ ...prev, [r.devId]: true }));
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      const canvas = await html2canvas(refElement, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: dark ? "#09090b" : "#ffffff",
+        windowWidth: refElement.scrollWidth,
+        windowHeight: refElement.scrollHeight,
+      });
+
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4",
+      });
+
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = canvas.width;
+      const imgHeight = canvas.height;
+      const ratio = Math.min(pdfWidth / imgWidth, pdfHeight / imgHeight);
+      const imgX = (pdfWidth - imgWidth * ratio) / 2;
+
+      // Add title
+      pdf.setFontSize(16);
+      pdf.setTextColor(dark ? 255 : 0);
+      pdf.text(`${r.owner}/${r.repo} - Analysis Report`, pdfWidth / 2, 10, { align: "center" });
+      pdf.setFontSize(10);
+      pdf.text(`Generated: ${new Date().toLocaleString()}`, pdfWidth / 2, 16, { align: "center" });
+
+      // Calculate pages needed
+      const scaledHeight = imgHeight * ratio;
+      const pageHeight = pdfHeight - 25;
+      let heightLeft = scaledHeight;
+      let page = 0;
+
+      while (heightLeft > 0) {
+        if (page > 0) {
+          pdf.addPage();
+        }
+
+        const sourceY = page * (pageHeight / ratio);
+        const sourceHeight = Math.min(pageHeight / ratio, imgHeight - sourceY);
+
+        if (sourceHeight > 0) {
+          const pageCanvas = document.createElement("canvas");
+          pageCanvas.width = imgWidth;
+          pageCanvas.height = sourceHeight;
+          const ctx = pageCanvas.getContext("2d");
+          ctx.drawImage(
+            canvas,
+            0, sourceY,
+            imgWidth, sourceHeight,
+            0, 0,
+            imgWidth, sourceHeight
+          );
+
+          const pageImgData = pageCanvas.toDataURL("image/png");
+          pdf.addImage(
+            pageImgData,
+            "PNG",
+            imgX,
+            page === 0 ? 22 : 10,
+            imgWidth * ratio,
+            sourceHeight * ratio
+          );
+        }
+
+        heightLeft -= pageHeight;
+        page++;
+      }
+
+      pdf.save(`${r.owner}-${r.repo}-analysis-${new Date().toISOString().split("T")[0]}.pdf`);
+
+      // Restore expanded state if it was collapsed
+      if (!wasExpanded) {
+        setExpandedDetails(prev => ({ ...prev, [r.devId]: false }));
+      }
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      alert("Failed to generate PDF. Please try again.");
+    } finally {
+      setExportingSinglePDF(prev => ({ ...prev, [r.devId]: false }));
+    }
   };
 
   // Analysis function for a single developer
@@ -1066,20 +1407,54 @@ export default function GitHubCommitAnalyzer() {
               </motion.div>
             )}
 
-            {/* Comparison Table */}
+            {/* Export buttons - shown when there are results */}
             {hasResults && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="mt-10"
-              >
-                <div className="mb-4">
+              <div className="mt-10 mb-4 flex items-start justify-between">
+                <div>
                   <h3 className="text-xl font-semibold text-gray-900 dark:text-zinc-100">Comparison Overview</h3>
                   <p className="text-sm text-gray-600 dark:text-zinc-300">
                     Side-by-side comparison of {resultsArray.length} developer{resultsArray.length > 1 ? "s" : ""}
                   </p>
                 </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={exportToCSV}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium transition shadow-md"
+                    title="Export all developers to CSV"
+                  >
+                    <Download size={16} />
+                    Export CSV
+                  </button>
+                  <button
+                    onClick={exportToPDF}
+                    disabled={exportingPDF}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white text-sm font-medium transition shadow-md"
+                    title="Export complete report to PDF (includes all charts)"
+                  >
+                    {exportingPDF ? (
+                      <>
+                        <RefreshCw size={16} className="animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <FileText size={16} />
+                        Export PDF
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
 
+            {/* Full Report section for PDF export - wraps both table and detailed charts */}
+            <div ref={reportRef}>
+            {/* Comparison Table */}
+            {hasResults && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+              >
                 <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-xl overflow-hidden">
                   <div className="overflow-x-auto">
                     <table className="w-full">
@@ -1228,28 +1603,52 @@ export default function GitHubCommitAnalyzer() {
                 animate={{ opacity: 1, y: 0 }}
                 className="mt-8"
               >
-                <button
-                  onClick={() => toggleDetails(r.devId)}
-                  className="w-full flex items-center justify-between p-4 rounded-2xl bg-white/70 dark:bg-white/5 border border-black/5 dark:border-white/10 hover:shadow-lg transition"
-                >
-                  <div className="flex items-center gap-3">
-                    <div
-                      className="w-4 h-4 rounded-full"
-                      style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
-                    />
-                    <span className="text-lg font-semibold text-gray-900 dark:text-zinc-100">
-                      {r.owner}/{r.repo} - Detailed Charts
-                    </span>
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${toneClasses(r.experienceLevel.tone).badge}`}>
-                      {r.experienceLevel.level}
-                    </span>
-                  </div>
-                  {expandedDetails[r.devId] ? (
-                    <ChevronUp size={20} className="text-gray-500" />
-                  ) : (
-                    <ChevronDown size={20} className="text-gray-500" />
-                  )}
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => toggleDetails(r.devId)}
+                    className="flex-1 flex items-center justify-between p-4 rounded-2xl bg-white/70 dark:bg-white/5 border border-black/5 dark:border-white/10 hover:shadow-lg transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="w-4 h-4 rounded-full"
+                        style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
+                      />
+                      <span className="text-lg font-semibold text-gray-900 dark:text-zinc-100">
+                        {r.owner}/{r.repo} - Detailed Charts
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${toneClasses(r.experienceLevel.tone).badge}`}>
+                        {r.experienceLevel.level}
+                      </span>
+                    </div>
+                    {expandedDetails[r.devId] ? (
+                      <ChevronUp size={20} className="text-gray-500" />
+                    ) : (
+                      <ChevronDown size={20} className="text-gray-500" />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => exportSingleToCSV(r)}
+                    className="p-3 rounded-xl bg-emerald-100 hover:bg-emerald-200 dark:bg-emerald-500/20 dark:hover:bg-emerald-500/30 text-emerald-700 dark:text-emerald-300 transition"
+                    title={`Export ${r.owner}/${r.repo} to CSV`}
+                  >
+                    <Download size={18} />
+                  </button>
+                  <button
+                    onClick={() => exportSingleToPDF(r)}
+                    disabled={exportingSinglePDF[r.devId]}
+                    className="p-3 rounded-xl bg-red-100 hover:bg-red-200 dark:bg-red-500/20 dark:hover:bg-red-500/30 text-red-700 dark:text-red-300 transition disabled:opacity-50"
+                    title={`Export ${r.owner}/${r.repo} to PDF`}
+                  >
+                    {exportingSinglePDF[r.devId] ? (
+                      <RefreshCw size={18} className="animate-spin" />
+                    ) : (
+                      <FileText size={18} />
+                    )}
+                  </button>
+                </div>
+
+                {/* Wrapper div for PDF capture */}
+                <div ref={el => singleReportRefs.current[r.devId] = el}>
 
                 <AnimatePresence>
                   {expandedDetails[r.devId] && (
@@ -1414,8 +1813,11 @@ export default function GitHubCommitAnalyzer() {
                     </motion.div>
                   )}
                 </AnimatePresence>
+                </div>
               </motion.div>
             ))}
+            </div>
+            {/* End of reportRef wrapper */}
 
             {/* Footer */}
             {hasResults && (
