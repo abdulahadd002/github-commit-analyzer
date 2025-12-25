@@ -250,10 +250,40 @@ export default function GitHubCommitAnalyzer() {
   const [searchHistory, setSearchHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
 
-  // Load history on mount
+  // Load history and dark mode preference on mount (client-side only)
   useEffect(() => {
     setSearchHistory(loadHistory());
+
+    // Load dark mode preference
+    try {
+      const stored = localStorage.getItem("github-analyzer-dark-mode");
+      if (stored !== null) {
+        setDark(stored === "true");
+      } else if (window.matchMedia) {
+        setDark(window.matchMedia("(prefers-color-scheme: dark)").matches);
+      }
+    } catch (e) {
+      console.error("Failed to load dark mode preference:", e);
+    }
   }, []);
+
+  // Save dark mode preference when it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem("github-analyzer-dark-mode", String(dark));
+    } catch (e) {
+      console.error("Failed to save dark mode preference:", e);
+    }
+  }, [dark]);
+
+  // Toggle dark mode function
+  const toggleDark = () => {
+    console.log("Toggle dark mode clicked, current:", dark);
+    setDark(prev => {
+      console.log("Setting dark to:", !prev);
+      return !prev;
+    });
+  };
 
   // Fixed internals
   const WORK_START = 1;
@@ -699,9 +729,9 @@ export default function GitHubCommitAnalyzer() {
     <div className={dark ? "dark" : ""}>
       <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-100 via-white to-purple-100 dark:from-zinc-950 dark:via-zinc-950 dark:to-zinc-900">
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
-          <div className="absolute -top-24 -left-24 h-72 w-72 rounded-full bg-blue-400/20 blur-3xl" />
-          <div className="absolute top-32 -right-24 h-80 w-80 rounded-full bg-purple-400/20 blur-3xl" />
-          <div className="absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-emerald-400/10 blur-3xl" />
+          <div className="absolute -top-24 -left-24 h-72 w-72 rounded-full bg-blue-400/20 dark:bg-blue-500/10 blur-3xl" />
+          <div className="absolute top-32 -right-24 h-80 w-80 rounded-full bg-purple-400/20 dark:bg-purple-500/10 blur-3xl" />
+          <div className="absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-emerald-400/10 dark:bg-emerald-500/5 blur-3xl" />
         </div>
 
         <div className="relative p-6">
@@ -724,12 +754,13 @@ export default function GitHubCommitAnalyzer() {
 
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setDark((d) => !d)}
-                  className="group inline-flex items-center gap-2 px-3 py-2 rounded-2xl bg-white/70 dark:bg-white/10 border border-black/10 dark:border-white/10 shadow-sm hover:shadow transition"
+                  type="button"
+                  onClick={toggleDark}
+                  className="group inline-flex items-center gap-2 px-3 py-2 rounded-2xl bg-white/70 dark:bg-white/10 border border-black/10 dark:border-white/10 shadow-sm hover:shadow-md hover:bg-white dark:hover:bg-white/20 transition-all cursor-pointer"
                   title="Toggle theme"
                 >
-                  {dark ? <Sun size={18} className="text-zinc-100" /> : <Moon size={18} className="text-gray-900" />}
-                  <span className="hidden sm:inline text-sm text-gray-700 dark:text-zinc-200">Theme</span>
+                  {dark ? <Sun size={18} className="text-yellow-400" /> : <Moon size={18} className="text-gray-700" />}
+                  <span className="hidden sm:inline text-sm text-gray-700 dark:text-zinc-200">{dark ? "Light" : "Dark"}</span>
                 </button>
 
                 <button
@@ -1282,7 +1313,7 @@ export default function GitHubCommitAnalyzer() {
                                   <Cell key={`cell-${index}`} fill={FILE_COLORS[index % FILE_COLORS.length]} />
                                 ))}
                               </Pie>
-                              <Tooltip />
+                              <Tooltip contentStyle={{ backgroundColor: dark ? "#1f2937" : "#fff", border: dark ? "1px solid #374151" : "1px solid #e5e7eb", borderRadius: "8px", color: dark ? "#f3f4f6" : "#111827" }} />
                             </PieChart>
                           </ResponsiveContainer>
                         </div>
@@ -1295,10 +1326,10 @@ export default function GitHubCommitAnalyzer() {
                           </div>
                           <ResponsiveContainer width="100%" height={220}>
                             <BarChart data={r.commitSizeDistribution}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="range" tick={{ fontSize: 10 }} />
-                              <YAxis />
-                              <Tooltip />
+                              <CartesianGrid strokeDasharray="3 3" stroke={dark ? "#374151" : "#e5e7eb"} />
+                              <XAxis dataKey="range" tick={{ fontSize: 10, fill: dark ? "#9ca3af" : "#4b5563" }} stroke={dark ? "#4b5563" : "#d1d5db"} />
+                              <YAxis tick={{ fill: dark ? "#9ca3af" : "#4b5563" }} stroke={dark ? "#4b5563" : "#d1d5db"} />
+                              <Tooltip contentStyle={{ backgroundColor: dark ? "#1f2937" : "#fff", border: dark ? "1px solid #374151" : "1px solid #e5e7eb", borderRadius: "8px", color: dark ? "#f3f4f6" : "#111827" }} />
                               <Bar dataKey="count" fill={DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length]} />
                             </BarChart>
                           </ResponsiveContainer>
@@ -1312,10 +1343,10 @@ export default function GitHubCommitAnalyzer() {
                           </div>
                           <ResponsiveContainer width="100%" height={220}>
                             <LineChart data={r.consistencyTimeline}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="commit" tick={{ fontSize: 10 }} />
-                              <YAxis />
-                              <Tooltip />
+                              <CartesianGrid strokeDasharray="3 3" stroke={dark ? "#374151" : "#e5e7eb"} />
+                              <XAxis dataKey="commit" tick={{ fontSize: 10, fill: dark ? "#9ca3af" : "#4b5563" }} stroke={dark ? "#4b5563" : "#d1d5db"} />
+                              <YAxis tick={{ fill: dark ? "#9ca3af" : "#4b5563" }} stroke={dark ? "#4b5563" : "#d1d5db"} />
+                              <Tooltip contentStyle={{ backgroundColor: dark ? "#1f2937" : "#fff", border: dark ? "1px solid #374151" : "1px solid #e5e7eb", borderRadius: "8px", color: dark ? "#f3f4f6" : "#111827" }} />
                               <Line type="monotone" dataKey="days" stroke={DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length]} strokeWidth={2} />
                             </LineChart>
                           </ResponsiveContainer>
@@ -1346,7 +1377,7 @@ export default function GitHubCommitAnalyzer() {
                                   <Cell key={`cell-${index}`} fill={color} />
                                 ))}
                               </Pie>
-                              <Tooltip />
+                              <Tooltip contentStyle={{ backgroundColor: dark ? "#1f2937" : "#fff", border: dark ? "1px solid #374151" : "1px solid #e5e7eb", borderRadius: "8px", color: dark ? "#f3f4f6" : "#111827" }} />
                             </PieChart>
                           </ResponsiveContainer>
                         </div>
@@ -1356,10 +1387,10 @@ export default function GitHubCommitAnalyzer() {
                           <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100 mb-4">Commits by Weekday</h3>
                           <ResponsiveContainer width="100%" height={280}>
                             <BarChart data={r.weekdayData}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="day" />
-                              <YAxis />
-                              <Tooltip />
+                              <CartesianGrid strokeDasharray="3 3" stroke={dark ? "#374151" : "#e5e7eb"} />
+                              <XAxis dataKey="day" tick={{ fill: dark ? "#9ca3af" : "#4b5563" }} stroke={dark ? "#4b5563" : "#d1d5db"} />
+                              <YAxis tick={{ fill: dark ? "#9ca3af" : "#4b5563" }} stroke={dark ? "#4b5563" : "#d1d5db"} />
+                              <Tooltip contentStyle={{ backgroundColor: dark ? "#1f2937" : "#fff", border: dark ? "1px solid #374151" : "1px solid #e5e7eb", borderRadius: "8px", color: dark ? "#f3f4f6" : "#111827" }} />
                               <Bar dataKey="commits" fill={DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length]} />
                             </BarChart>
                           </ResponsiveContainer>
@@ -1371,11 +1402,11 @@ export default function GitHubCommitAnalyzer() {
                         <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100 mb-4">Hourly Distribution</h3>
                         <ResponsiveContainer width="100%" height={280}>
                           <BarChart data={r.hourlyData}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="hour" tick={{ fontSize: 10 }} />
-                            <YAxis />
-                            <Tooltip />
-                            <Legend />
+                            <CartesianGrid strokeDasharray="3 3" stroke={dark ? "#374151" : "#e5e7eb"} />
+                            <XAxis dataKey="hour" tick={{ fontSize: 10, fill: dark ? "#9ca3af" : "#4b5563" }} stroke={dark ? "#4b5563" : "#d1d5db"} />
+                            <YAxis tick={{ fill: dark ? "#9ca3af" : "#4b5563" }} stroke={dark ? "#4b5563" : "#d1d5db"} />
+                            <Tooltip contentStyle={{ backgroundColor: dark ? "#1f2937" : "#fff", border: dark ? "1px solid #374151" : "1px solid #e5e7eb", borderRadius: "8px", color: dark ? "#f3f4f6" : "#111827" }} />
+                            <Legend wrapperStyle={{ color: dark ? "#9ca3af" : "#4b5563" }} />
                             <Bar dataKey="commits" fill={DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length]} />
                           </BarChart>
                         </ResponsiveContainer>
