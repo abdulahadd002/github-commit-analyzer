@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -15,7 +15,6 @@ import {
   Line,
 } from "recharts";
 import {
-  Calendar,
   Clock,
   Award,
   MessageSquare,
@@ -23,19 +22,27 @@ import {
   Activity,
   FileCode,
   RefreshCw,
-  ShieldAlert,
   Moon,
   Sun,
   X,
+  Plus,
+  Users,
+  ChevronDown,
+  ChevronUp,
+  Trash2,
+  History,
+  RotateCcw,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 /**
- * GitHub Commit Analyzer (JSX / Option B)
- * - Pulls ALL commits via pagination.
- * - Fetches commit details for ALL commits (no sampling) for realistic stats/file diversity.
- * - Fixed work window and concurrency (inputs removed per earlier request).
+ * GitHub Commit Analyzer - Multi-Developer Version
+ * - Supports up to 10 developers with separate owner/repo pairs
+ * - Side-by-side comparison of experience reports
+ * - Individual and batch analysis
  */
+
+const MAX_DEVELOPERS = 10;
 
 const COLORS = ["#10b981", "#ef4444"]; // On-time, Late
 const FILE_COLORS = [
@@ -47,6 +54,19 @@ const FILE_COLORS = [
   "#6b7280",
   "#14b8a6",
   "#a855f7",
+];
+
+const DEVELOPER_COLORS = [
+  "#3b82f6", // blue
+  "#8b5cf6", // purple
+  "#10b981", // emerald
+  "#f59e0b", // amber
+  "#ef4444", // red
+  "#06b6d4", // cyan
+  "#ec4899", // pink
+  "#84cc16", // lime
+  "#f97316", // orange
+  "#6366f1", // indigo
 ];
 
 function safeExt(filename) {
@@ -99,27 +119,27 @@ function calculateExperienceLevel(totalCommits, onTimePercentage, messageQuality
   else score += 15;
 
   // Consistency (20)
-  if (consistency >= 70) score += 20;
-  else if (consistency >= 60) score += 15;
-  else if (consistency >= 40) score += 10;
+  if (consistency >= 70 && totalCommits > 100) score += 20;
+  else if (consistency >= 60 && totalCommits > 50) score += 15;
+  else if (consistency >= 40 && totalCommits > 20) score += 10;
   else score += 5;
 
-  if (score >= 80) return { level: "Senior", tone: "purple" };
-  if (score >= 60) return { level: "Mid-Level", tone: "blue" };
-  if (score >= 40) return { level: "Junior", tone: "green" };
-  return { level: "Beginner", tone: "yellow" };
+  if (score >= 80) return { level: "Senior", tone: "purple", score };
+  if (score >= 60) return { level: "Mid-Level", tone: "blue", score };
+  if (score >= 40) return { level: "Junior", tone: "green", score };
+  return { level: "Beginner", tone: "yellow", score };
 }
 
 function toneClasses(tone) {
   switch (tone) {
     case "purple":
-      return { badge: "bg-purple-100 text-purple-700" };
+      return { badge: "bg-purple-100 text-purple-700", bg: "bg-purple-500" };
     case "blue":
-      return { badge: "bg-blue-100 text-blue-700" };
+      return { badge: "bg-blue-100 text-blue-700", bg: "bg-blue-500" };
     case "green":
-      return { badge: "bg-green-100 text-green-700" };
+      return { badge: "bg-green-100 text-green-700", bg: "bg-green-500" };
     default:
-      return { badge: "bg-yellow-100 text-yellow-700" };
+      return { badge: "bg-yellow-100 text-yellow-700", bg: "bg-yellow-500" };
   }
 }
 
@@ -180,69 +200,210 @@ async function fetchJson(url, { headers, signal }) {
   return { resp, json, rawText: text };
 }
 
-export default function GitHubCommitAnalyzer() {
-  const [username, setUsername] = useState("");
-  const [repo, setRepo] = useState("");
-  const [token, setToken] = useState("");
+// Generate unique ID
+let nextId = 1;
+function generateId() {
+  return nextId++;
+}
 
-  const [loading, setLoading] = useState(false);
-  const [phase, setPhase] = useState("idle"); // "idle" | "listing" | "details" | "done"
-  const [progress, setProgress] = useState({ current: 0, total: 0, pct: 0 });
-  const [data, setData] = useState(null);
-  const [error, setError] = useState("");
+// LocalStorage key for history
+const HISTORY_STORAGE_KEY = "github-commit-analyzer-history";
+
+// Load history from localStorage
+function loadHistory() {
+  try {
+    const stored = localStorage.getItem(HISTORY_STORAGE_KEY);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (e) {
+    console.error("Failed to load history:", e);
+  }
+  return [];
+}
+
+// Save history to localStorage
+function saveHistory(history) {
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
+  } catch (e) {
+    console.error("Failed to save history:", e);
+  }
+}
+
+export default function GitHubCommitAnalyzer() {
+  // Multi-developer state
+  const [developers, setDevelopers] = useState([
+    { id: generateId(), username: "", repo: "", token: "" }
+  ]);
+  const [results, setResults] = useState({}); // { [id]: data }
+  const [loadingStates, setLoadingStates] = useState({}); // { [id]: boolean }
+  const [phases, setPhases] = useState({}); // { [id]: "idle" | "listing" | "details" | "done" }
+  const [progresses, setProgresses] = useState({}); // { [id]: { current, total, pct } }
+  const [errors, setErrors] = useState({}); // { [id]: string }
+  const [expandedDetails, setExpandedDetails] = useState({}); // { [id]: boolean }
 
   const [dark, setDark] = useState(false);
-  const [showComplete, setShowComplete] = useState(false);
+  const [analyzingAll, setAnalyzingAll] = useState(false);
 
-  // Fixed internals (inputs removed from UI)
-  const WORK_START = 9;
-  const WORK_END = 21; // 9pm
-  const CONCURRENCY = 6;
+  // Search history state
+  const [searchHistory, setSearchHistory] = useState([]);
+  const [showHistory, setShowHistory] = useState(false);
 
-  const abortRef = useRef(null);
+  // Load history on mount
+  useEffect(() => {
+    setSearchHistory(loadHistory());
+  }, []);
 
-  const headers = useMemo(() => {
-    const h = {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
+  // Fixed internals
+  const WORK_START = 1;
+  const WORK_END = 24;
+  const CONCURRENCY = 10;
+
+  const abortRefs = useRef({}); // { [id]: AbortController }
+
+  // Developer management functions
+  const addDeveloper = () => {
+    if (developers.length >= MAX_DEVELOPERS) return;
+    setDevelopers([...developers, { id: generateId(), username: "", repo: "", token: "" }]);
+  };
+
+  const removeDeveloper = (id) => {
+    if (developers.length <= 1) return;
+    // Stop any running analysis
+    if (abortRefs.current[id]) {
+      abortRefs.current[id].abort();
+      delete abortRefs.current[id];
+    }
+    setDevelopers(developers.filter(d => d.id !== id));
+    // Clean up state
+    setResults(prev => { const n = { ...prev }; delete n[id]; return n; });
+    setLoadingStates(prev => { const n = { ...prev }; delete n[id]; return n; });
+    setPhases(prev => { const n = { ...prev }; delete n[id]; return n; });
+    setProgresses(prev => { const n = { ...prev }; delete n[id]; return n; });
+    setErrors(prev => { const n = { ...prev }; delete n[id]; return n; });
+    setExpandedDetails(prev => { const n = { ...prev }; delete n[id]; return n; });
+  };
+
+  const updateDeveloper = (id, field, value) => {
+    setDevelopers(developers.map(d =>
+      d.id === id ? { ...d, [field]: value } : d
+    ));
+  };
+
+  const stopAnalysis = (id) => {
+    if (abortRefs.current[id]) {
+      abortRefs.current[id].abort();
+    }
+  };
+
+  const stopAll = () => {
+    Object.keys(abortRefs.current).forEach(id => {
+      if (abortRefs.current[id]) {
+        abortRefs.current[id].abort();
+      }
+    });
+  };
+
+  const resetAll = () => {
+    stopAll();
+    setResults({});
+    setLoadingStates({});
+    setPhases({});
+    setProgresses({});
+    setErrors({});
+    setExpandedDetails({});
+    setAnalyzingAll(false);
+  };
+
+  const toggleDetails = (id) => {
+    setExpandedDetails(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  // History management functions
+  const addToHistory = (result) => {
+    const historyEntry = {
+      id: Date.now(),
+      owner: result.owner,
+      repo: result.repo,
+      analyzedAt: new Date().toISOString(),
+      experienceLevel: result.experienceLevel,
+      totalCommits: result.totalCommits,
+      onTimePercentage: result.onTimePercentage,
+      messageQualityScore: result.messageQualityScore,
+      consistencyScore: result.consistencyScore,
+      avgCommitSize: result.avgCommitSize,
+      totalLinesAdded: result.totalLinesAdded,
+      totalLinesDeleted: result.totalLinesDeleted,
     };
-    if (token.trim()) h.Authorization = `Bearer ${token.trim()}`;
-    return h;
-  }, [token]);
 
-  const stop = () => {
-    if (abortRef.current) abortRef.current.abort();
+    setSearchHistory(prev => {
+      // Remove duplicate if exists (same owner/repo)
+      const filtered = prev.filter(
+        h => !(h.owner === historyEntry.owner && h.repo === historyEntry.repo)
+      );
+      // Add new entry at the beginning, keep max 50 entries
+      const updated = [historyEntry, ...filtered].slice(0, 50);
+      saveHistory(updated);
+      return updated;
+    });
   };
 
-  const reset = () => {
-    stop();
-    setLoading(false);
-    setPhase("idle");
-    setProgress({ current: 0, total: 0, pct: 0 });
-    setError("");
-    setData(null);
+  const removeFromHistory = (historyId) => {
+    setSearchHistory(prev => {
+      const updated = prev.filter(h => h.id !== historyId);
+      saveHistory(updated);
+      return updated;
+    });
   };
 
-  const analyzeCommits = async () => {
-    if (!username.trim() || !repo.trim()) {
-      setError("Please enter both username and repository name");
+  const clearHistory = () => {
+    setSearchHistory([]);
+    saveHistory([]);
+  };
+
+  const loadFromHistory = (historyEntry) => {
+    // Add a new developer card with the history entry's owner/repo
+    const newDev = { id: generateId(), username: historyEntry.owner, repo: historyEntry.repo, token: "" };
+    setDevelopers(prev => {
+      // Check if we already have this owner/repo
+      const exists = prev.some(d => d.username === historyEntry.owner && d.repo === historyEntry.repo);
+      if (exists) return prev;
+      if (prev.length >= MAX_DEVELOPERS) return prev;
+      return [...prev, newDev];
+    });
+  };
+
+  // Analysis function for a single developer
+  const analyzeCommits = async (devId) => {
+    const dev = developers.find(d => d.id === devId);
+    if (!dev) return;
+
+    if (!dev.username.trim() || !dev.repo.trim()) {
+      setErrors(prev => ({ ...prev, [devId]: "Please enter both owner and repository name" }));
       return;
     }
 
-    setLoading(true);
-    setPhase("listing");
-    setError("");
-    setData(null);
-    setProgress({ current: 0, total: 0, pct: 0 });
+    setLoadingStates(prev => ({ ...prev, [devId]: true }));
+    setPhases(prev => ({ ...prev, [devId]: "listing" }));
+    setErrors(prev => ({ ...prev, [devId]: "" }));
+    setResults(prev => { const n = { ...prev }; delete n[devId]; return n; });
+    setProgresses(prev => ({ ...prev, [devId]: { current: 0, total: 0, pct: 0 } }));
 
     const controller = new AbortController();
-    abortRef.current = controller;
+    abortRefs.current[devId] = controller;
+
+    const headers = {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+    };
+    if (dev.token.trim()) headers.Authorization = `Bearer ${dev.token.trim()}`;
 
     try {
-      const owner = encodeURIComponent(username.trim());
-      const name = encodeURIComponent(repo.trim());
+      const owner = encodeURIComponent(dev.username.trim());
+      const name = encodeURIComponent(dev.repo.trim());
 
-      // 0) Try repo metadata to pin to default branch. If blocked, continue without it.
+      // 0) Try repo metadata
       let defaultBranch = "";
       let metaWarning = "";
       try {
@@ -252,13 +413,10 @@ export default function GitHubCommitAnalyzer() {
         if (metaRes.resp.ok && metaRes.json) {
           defaultBranch = metaRes.json.default_branch || "";
         } else {
-          const msg =
-            (metaRes.json && (metaRes.json.message || metaRes.json.error)) || metaRes.rawText || "";
+          const msg = (metaRes.json && (metaRes.json.message || metaRes.json.error)) || metaRes.rawText || "";
 
           if (metaRes.resp.status === 403) {
-            metaWarning =
-              "Repo metadata blocked (403). Falling back to commit listing." +
-              (msg ? ` (${msg})` : "");
+            metaWarning = "Repo metadata blocked (403). Falling back to commit listing." + (msg ? ` (${msg})` : "");
           } else if (metaRes.resp.status === 404) {
             throw new Error("Repo not found (check owner/repo spelling and access)");
           } else if (metaRes.resp.status === 401) {
@@ -272,9 +430,9 @@ export default function GitHubCommitAnalyzer() {
         metaWarning = "Could not read repo metadata. Falling back to commit listing.";
       }
 
-      if (metaWarning) setError(metaWarning);
+      if (metaWarning) setErrors(prev => ({ ...prev, [devId]: metaWarning }));
 
-      // 1) Fetch ALL commits (pagination)
+      // 1) Fetch ALL commits
       const allCommits = [];
       const seenShas = new Set();
       const seenPageUrls = new Set();
@@ -296,8 +454,7 @@ export default function GitHubCommitAnalyzer() {
           if (resp.status === 403) {
             const resetTs = resp.headers.get("x-ratelimit-reset");
             const remaining = resp.headers.get("x-ratelimit-remaining");
-            const msg =
-              (json && (json.message || json.error)) || rawText || "GitHub API rate-limited or forbidden";
+            const msg = (json && (json.message || json.error)) || rawText || "GitHub API rate-limited or forbidden";
             throw new Error(
               `${msg}${remaining !== null ? ` (remaining: ${remaining})` : ""}${
                 resetTs ? ` (reset: ${new Date(Number(resetTs) * 1000).toLocaleString()})` : ""
@@ -316,7 +473,7 @@ export default function GitHubCommitAnalyzer() {
           allCommits.push(c);
         }
 
-        setProgress({ current: allCommits.length, total: 0, pct: 0 });
+        setProgresses(prev => ({ ...prev, [devId]: { current: allCommits.length, total: 0, pct: 0 } }));
 
         const links = parseLinkHeader(resp.headers.get("link"));
         nextUrl = links.next || "";
@@ -364,8 +521,8 @@ export default function GitHubCommitAnalyzer() {
       const messageQualityScore = totalCommits ? Math.round(totalMessageScore / totalCommits) : 0;
 
       // 3) Fetch details for ALL commits
-      setPhase("details");
-      setProgress({ current: 0, total: totalCommits, pct: 0 });
+      setPhases(prev => ({ ...prev, [devId]: "details" }));
+      setProgresses(prev => ({ ...prev, [devId]: { current: 0, total: totalCommits, pct: 0 } }));
 
       let totalLinesAdded = 0;
       let totalLinesDeleted = 0;
@@ -387,7 +544,6 @@ export default function GitHubCommitAnalyzer() {
               if (json?.stats) {
                 const adds = json.stats.additions || 0;
                 const dels = json.stats.deletions || 0;
-                // NOTE: technically non-atomic across workers; acceptable for UI analytics.
                 totalLinesAdded += adds;
                 totalLinesDeleted += dels;
                 commitSizes.push(adds + dels);
@@ -406,7 +562,7 @@ export default function GitHubCommitAnalyzer() {
             if (my % 6 === 0) {
               const done = Math.min(my + 1, allCommits.length);
               const pct = (done / allCommits.length) * 100;
-              setProgress({ current: done, total: allCommits.length, pct });
+              setProgresses(prev => ({ ...prev, [devId]: { current: done, total: allCommits.length, pct } }));
               await sleep(0);
             }
           }
@@ -414,14 +570,13 @@ export default function GitHubCommitAnalyzer() {
       });
 
       await Promise.all(workers);
-      setProgress({ current: totalCommits, total: totalCommits, pct: 100 });
+      setProgresses(prev => ({ ...prev, [devId]: { current: totalCommits, total: totalCommits, pct: 100 } }));
 
       // 4) Derived metrics
       const sortedDates = [...commitDates].sort((a, b) => a.getTime() - b.getTime());
       const intervals = [];
       for (let i = 1; i < sortedDates.length; i++) {
-        const diffDays =
-          (sortedDates[i].getTime() - sortedDates[i - 1].getTime()) / (1000 * 60 * 60 * 24);
+        const diffDays = (sortedDates[i].getTime() - sortedDates[i - 1].getTime()) / (1000 * 60 * 60 * 24);
         if (Number.isFinite(diffDays) && diffDays >= 0) intervals.push(diffDays);
       }
       const avgInterval = intervals.length ? intervals.reduce((a, b) => a + b, 0) / intervals.length : 0;
@@ -454,8 +609,7 @@ export default function GitHubCommitAnalyzer() {
 
       const consistencyTimeline = [];
       for (let i = 0; i < Math.min(sortedDates.length - 1, 30); i++) {
-        const diffDays =
-          (sortedDates[i + 1].getTime() - sortedDates[i].getTime()) / (1000 * 60 * 60 * 24);
+        const diffDays = (sortedDates[i + 1].getTime() - sortedDates[i].getTime()) / (1000 * 60 * 60 * 24);
         consistencyTimeline.push({
           commit: `#${i + 1}`,
           days: Number.isFinite(diffDays) ? Number(diffDays.toFixed(1)) : 0,
@@ -473,7 +627,9 @@ export default function GitHubCommitAnalyzer() {
       const weekdayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
       const weekdayData = weekdayDistribution.map((count, day) => ({ day: weekdayNames[day], commits: count }));
 
-      setData({
+      const resultData = {
+        owner: dev.username.trim(),
+        repo: dev.repo.trim(),
         totalCommits,
         onTimeCount,
         lateCount,
@@ -489,26 +645,55 @@ export default function GitHubCommitAnalyzer() {
         experienceLevel,
         hourlyData,
         weekdayData,
-      });
+      };
 
-      setPhase("done");
+      setResults(prev => ({
+        ...prev,
+        [devId]: resultData
+      }));
 
-      setShowComplete(true);
-      setTimeout(() => setShowComplete(false), 2500);
-      setTimeout(() => setPhase("idle"), 2600);
+      // Save to history
+      addToHistory(resultData);
+
+      setPhases(prev => ({ ...prev, [devId]: "done" }));
+      setTimeout(() => setPhases(prev => ({ ...prev, [devId]: "idle" })), 2000);
     } catch (err) {
-      if (err?.name === "AbortError") setError("Stopped.");
-      else setError(err?.message || "Something went wrong");
-      setPhase("idle");
+      if (err?.name === "AbortError") {
+        setErrors(prev => ({ ...prev, [devId]: "Stopped." }));
+      } else {
+        setErrors(prev => ({ ...prev, [devId]: err?.message || "Something went wrong" }));
+      }
+      setPhases(prev => ({ ...prev, [devId]: "idle" }));
     } finally {
-      setLoading(false);
-      abortRef.current = null;
+      setLoadingStates(prev => ({ ...prev, [devId]: false }));
+      delete abortRefs.current[devId];
     }
   };
 
-  const expTone = data?.experienceLevel?.tone || "blue";
-  const expClasses = toneClasses(expTone);
-  const isWarning = !!error && /(falling back|metadata|blocked|unavailable)/i.test(error);
+  // Analyze all developers
+  const analyzeAllDevelopers = async () => {
+    const validDevs = developers.filter(d => d.username.trim() && d.repo.trim());
+    if (validDevs.length === 0) {
+      return;
+    }
+
+    setAnalyzingAll(true);
+
+    // Run all analyses in parallel
+    await Promise.all(validDevs.map(d => analyzeCommits(d.id)));
+
+    setAnalyzingAll(false);
+  };
+
+  // Check if any developer is loading
+  const anyLoading = Object.values(loadingStates).some(Boolean);
+
+  // Get results as array for comparison
+  const resultsArray = developers
+    .filter(d => results[d.id])
+    .map(d => ({ ...results[d.id], devId: d.id, devIndex: developers.findIndex(dev => dev.id === d.id) }));
+
+  const hasResults = resultsArray.length > 0;
 
   return (
     <div className={dark ? "dark" : ""}>
@@ -521,15 +706,18 @@ export default function GitHubCommitAnalyzer() {
 
         <div className="relative p-6">
           <div className="max-w-7xl mx-auto">
+            {/* Header */}
             <div className="flex items-center justify-between gap-4 mb-8">
               <div className="flex items-center gap-3">
-                <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 shadow-lg" />
+                <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600 shadow-lg flex items-center justify-center">
+                  <Users size={24} className="text-white" />
+                </div>
                 <div>
                   <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-gray-900 dark:text-zinc-100">
-                    Experience Analysis for GitHub Commits
+                    Multi-Developer Experience Analysis
                   </h1>
                   <p className="text-sm text-gray-600 dark:text-zinc-300">
-                    Full-history of the repository
+                    Compare up to {MAX_DEVELOPERS} developers side-by-side
                   </p>
                 </div>
               </div>
@@ -545,9 +733,9 @@ export default function GitHubCommitAnalyzer() {
                 </button>
 
                 <button
-                  onClick={reset}
+                  onClick={resetAll}
                   className="inline-flex items-center gap-2 px-3 py-2 rounded-2xl bg-white/70 dark:bg-white/10 border border-black/10 dark:border-white/10 shadow-sm hover:shadow transition"
-                  title="Reset"
+                  title="Reset all"
                 >
                   <RefreshCw size={18} className="text-gray-800 dark:text-zinc-200" />
                   <span className="hidden sm:inline text-sm text-gray-700 dark:text-zinc-200">Reset</span>
@@ -555,6 +743,7 @@ export default function GitHubCommitAnalyzer() {
               </div>
             </div>
 
+            {/* Developer Input Cards */}
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -563,9 +752,9 @@ export default function GitHubCommitAnalyzer() {
               <div className="p-6 md:p-7">
                 <div className="flex items-start justify-between gap-4 mb-5">
                   <div>
-                    <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Analyze a repository</h2>
+                    <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Add Developers to Analyze</h2>
                     <p className="text-sm text-gray-600 dark:text-zinc-300">
-                      Enter owner/repo and an optional token for higher rate limits.
+                      Enter owner/repo pairs for each developer. Use the same token for all or individual tokens.
                     </p>
                   </div>
                   <div className="hidden md:flex items-center gap-2">
@@ -573,364 +762,635 @@ export default function GitHubCommitAnalyzer() {
                       WORK: 09:00–21:00
                     </span>
                     <span className="px-3 py-1 rounded-full text-xs font-medium bg-black/5 dark:bg-white/10 text-gray-700 dark:text-zinc-200">
-                      Concurrency: 6
+                      Max: {MAX_DEVELOPERS} developers
                     </span>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="relative">
-                    <input
-                      type="text"
-                      placeholder="Owner"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      className="w-full px-4 py-3 rounded-2xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 dark:text-zinc-500">
-                      owner
-                    </div>
-                  </div>
+                {/* Developer cards */}
+                <div className="space-y-4">
+                  {developers.map((dev, index) => (
+                    <motion.div
+                      key={dev.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="rounded-2xl border border-black/5 dark:border-white/10 bg-white/50 dark:bg-white/5 p-4"
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="w-3 h-3 rounded-full"
+                            style={{ backgroundColor: DEVELOPER_COLORS[index % DEVELOPER_COLORS.length] }}
+                          />
+                          <span className="text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            Developer {index + 1}
+                          </span>
+                          {results[dev.id] && (
+                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${toneClasses(results[dev.id].experienceLevel.tone).badge}`}>
+                              {results[dev.id].experienceLevel.level}
+                            </span>
+                          )}
+                        </div>
+                        {developers.length > 1 && (
+                          <button
+                            onClick={() => removeDeveloper(dev.id)}
+                            className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-500/20 text-gray-400 hover:text-red-500 transition"
+                            title="Remove developer"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
 
-                  <div className="relative">
-                    <input
-                      type="text"
-                      placeholder="Repository"
-                      value={repo}
-                      onChange={(e) => setRepo(e.target.value)}
-                      className="w-full px-4 py-3 rounded-2xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 dark:text-zinc-500">
-                      repo
-                    </div>
-                  </div>
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                        <input
+                          type="text"
+                          placeholder="Owner"
+                          value={dev.username}
+                          onChange={(e) => updateDeveloper(dev.id, "username", e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Repository"
+                          value={dev.repo}
+                          onChange={(e) => updateDeveloper(dev.id, "repo", e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                        />
+                        <input
+                          type="password"
+                          placeholder="GitHub Token (optional)"
+                          value={dev.token}
+                          onChange={(e) => updateDeveloper(dev.id, "token", e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => analyzeCommits(dev.id)}
+                            disabled={loadingStates[dev.id] || !dev.username.trim() || !dev.repo.trim()}
+                            className="flex-1 px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white text-sm font-medium transition disabled:opacity-50"
+                          >
+                            {loadingStates[dev.id] ? (
+                              <span className="flex items-center justify-center gap-1">
+                                <RefreshCw size={14} className="animate-spin" />
+                                Analyzing
+                              </span>
+                            ) : (
+                              "Analyze"
+                            )}
+                          </button>
+                          {loadingStates[dev.id] && (
+                            <button
+                              onClick={() => stopAnalysis(dev.id)}
+                              className="px-3 py-2 rounded-xl border border-black/10 dark:border-white/10 hover:bg-gray-100 dark:hover:bg-white/10 text-sm transition"
+                            >
+                              <X size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
 
-                  <div className="relative">
-                    <input
-                      type="password"
-                      placeholder="GitHub Token (recommended)"
-                      value={token}
-                      onChange={(e) => setToken(e.target.value)}
-                      className="w-full px-4 py-3 rounded-2xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400 dark:text-zinc-500">
-                      token
-                    </div>
-                  </div>
+                      {/* Progress bar for this developer */}
+                      <AnimatePresence>
+                        {(phases[dev.id] === "listing" || phases[dev.id] === "details") && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: "auto" }}
+                            exit={{ opacity: 0, height: 0 }}
+                            className="mt-3"
+                          >
+                            <div className="flex items-center justify-between text-xs text-gray-500 dark:text-zinc-400 mb-1">
+                              <span>
+                                {phases[dev.id] === "listing" ? "Fetching commits..." : "Fetching details..."}
+                              </span>
+                              <span>
+                                {phases[dev.id] === "listing"
+                                  ? `${formatNumber(progresses[dev.id]?.current || 0)} commits`
+                                  : `${formatNumber(progresses[dev.id]?.current || 0)} / ${formatNumber(progresses[dev.id]?.total || 0)}`}
+                              </span>
+                            </div>
+                            <ProgressBar value={phases[dev.id] === "details" ? (progresses[dev.id]?.pct || 0) : 20} />
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+
+                      {/* Error for this developer */}
+                      {errors[dev.id] && (
+                        <div className={`mt-3 rounded-xl p-3 text-xs ${
+                          /(falling back|metadata|blocked|unavailable)/i.test(errors[dev.id])
+                            ? "bg-amber-50/70 dark:bg-amber-500/10 text-amber-900 dark:text-amber-200"
+                            : "bg-red-50/80 dark:bg-red-500/10 text-red-800 dark:text-red-200"
+                        }`}>
+                          {errors[dev.id]}
+                        </div>
+                      )}
+                    </motion.div>
+                  ))}
                 </div>
 
+                {/* Add developer and Analyze All buttons */}
                 <div className="mt-5 flex flex-col sm:flex-row gap-3">
                   <button
-                    onClick={analyzeCommits}
-                    disabled={loading}
+                    onClick={addDeveloper}
+                    disabled={developers.length >= MAX_DEVELOPERS}
+                    className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl border-2 border-dashed border-gray-300 dark:border-zinc-600 text-gray-600 dark:text-zinc-300 hover:border-blue-500 hover:text-blue-600 dark:hover:border-blue-400 dark:hover:text-blue-400 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Plus size={18} />
+                    Add Developer ({developers.length}/{MAX_DEVELOPERS})
+                  </button>
+
+                  <button
+                    onClick={analyzeAllDevelopers}
+                    disabled={anyLoading || developers.filter(d => d.username.trim() && d.repo.trim()).length === 0}
                     className="relative overflow-hidden flex-1 rounded-2xl px-5 py-3 font-semibold text-white shadow-lg disabled:opacity-60"
                   >
                     <span className="absolute inset-0 bg-gradient-to-r from-blue-600 to-purple-600" />
                     <span className="absolute inset-0 opacity-0 hover:opacity-100 transition bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.35),_transparent_55%)]" />
                     <span className="relative inline-flex items-center justify-center gap-2">
-                      {loading ? (
+                      {analyzingAll ? (
                         <>
-                          <motion.span
-                            className="inline-block"
-                            animate={{ rotate: 360 }}
-                            transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
-                          >
-                            <RefreshCw size={18} />
-                          </motion.span>
-                          Analyzing…
+                          <RefreshCw size={18} className="animate-spin" />
+                          Analyzing All...
                         </>
                       ) : (
-                        <>Analyze all commits</>
+                        <>
+                          <Users size={18} />
+                          Analyze All Developers
+                        </>
                       )}
                     </span>
                   </button>
 
-                  <button
-                    onClick={stop}
-                    disabled={!loading}
-                    className="inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 font-semibold border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 text-gray-900 dark:text-zinc-100 hover:bg-white dark:hover:bg-white/10 transition disabled:opacity-50"
-                    title="Stop"
-                  >
-                    <X size={18} /> Stop
-                  </button>
+                  {anyLoading && (
+                    <button
+                      onClick={stopAll}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 font-semibold border border-black/10 dark:border-white/10 bg-white/70 dark:bg-white/5 text-gray-900 dark:text-zinc-100 hover:bg-white dark:hover:bg-white/10 transition"
+                    >
+                      <X size={18} /> Stop All
+                    </button>
+                  )}
                 </div>
-
-                <AnimatePresence>
-                  {(phase === "listing" || phase === "details") && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="mt-5 rounded-2xl border border-black/5 dark:border-white/10 bg-white/60 dark:bg-white/5 p-4"
-                    >
-                      <div className="flex items-center justify-between gap-3 mb-2">
-                        <div className="text-sm font-medium text-gray-800 dark:text-zinc-200">
-                          {phase === "listing" && "Fetching commit list…"}
-                          {phase === "details" && "Fetching commit details…"}
-                        </div>
-                        <div className="text-xs text-gray-500 dark:text-zinc-400">
-                          {phase === "listing"
-                            ? `commits so far: ${formatNumber(progress.current)}`
-                            : `${formatNumber(progress.current)} / ${formatNumber(progress.total)}`}
-                        </div>
-                      </div>
-                      <ProgressBar value={phase === "details" ? progress.pct : 20} />
-                      <div className="mt-2 text-xs text-gray-500 dark:text-zinc-400">
-                        Tip: Tokens increase limits. Large repos may still hit GitHub limits.
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                {error && (
-                  <div
-                    className={
-                      "mt-5 rounded-2xl border p-4 " +
-                      (isWarning
-                        ? "bg-amber-50/70 dark:bg-amber-500/10 border-amber-200/70 dark:border-amber-400/20 text-amber-900 dark:text-amber-200"
-                        : "bg-red-50/80 dark:bg-red-500/10 border-red-200 dark:border-red-500/20 text-red-800 dark:text-red-200")
-                    }
-                  >
-                    <div className="flex items-center gap-2 font-semibold">
-                      <ShieldAlert size={18} />
-                      {isWarning ? "Notice" : "Error"}
-                    </div>
-                    <div className="mt-1 text-sm leading-relaxed">{error}</div>
-                  </div>
-                )}
-
-                <AnimatePresence>
-                  {showComplete && !error && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="mt-5 rounded-2xl border border-emerald-200/60 dark:border-emerald-400/20 bg-emerald-50/70 dark:bg-emerald-500/10 p-4 text-emerald-900 dark:text-emerald-200 text-sm"
-                    >
-                      ✅ Complete
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
             </motion.div>
 
-            {data && (
-              <>
-                <div className="mt-10 mb-4 flex items-end justify-between gap-4">
-                  <div>
-                    <h3 className="text-xl font-semibold text-gray-900 dark:text-zinc-100">Overview</h3>
-                    <p className="text-sm text-gray-600 dark:text-zinc-300">
-                      Key indicators from the repository history.
-                    </p>
+            {/* Search History Section */}
+            {searchHistory.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-6 rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-xl"
+              >
+                <div className="p-6">
+                  <button
+                    onClick={() => setShowHistory(!showHistory)}
+                    className="w-full flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-3">
+                      <History size={20} className="text-blue-600" />
+                      <div className="text-left">
+                        <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Search History</h2>
+                        <p className="text-sm text-gray-600 dark:text-zinc-300">
+                          {searchHistory.length} previous {searchHistory.length === 1 ? "analysis" : "analyses"} saved
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm("Clear all search history?")) {
+                            clearHistory();
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-xl text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 transition"
+                      >
+                        Clear All
+                      </button>
+                      {showHistory ? (
+                        <ChevronUp size={20} className="text-gray-500" />
+                      ) : (
+                        <ChevronDown size={20} className="text-gray-500" />
+                      )}
+                    </div>
+                  </button>
+
+                  <AnimatePresence>
+                    {showHistory && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="mt-4 space-y-3 max-h-96 overflow-y-auto">
+                          {searchHistory.map((entry) => (
+                            <div
+                              key={entry.id}
+                              className="flex items-center justify-between p-4 rounded-2xl bg-white/50 dark:bg-white/5 border border-black/5 dark:border-white/10"
+                            >
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="font-medium text-gray-900 dark:text-zinc-100">
+                                    {entry.owner}/{entry.repo}
+                                  </span>
+                                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${toneClasses(entry.experienceLevel.tone).badge}`}>
+                                    {entry.experienceLevel.level}
+                                  </span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500 dark:text-zinc-400">
+                                  <span>{entry.totalCommits} commits</span>
+                                  <span>Score: {entry.experienceLevel.score}</span>
+                                  <span>Quality: {entry.messageQualityScore}</span>
+                                  <span className="text-gray-400">
+                                    {new Date(entry.analyzedAt).toLocaleDateString()} {new Date(entry.analyzedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 ml-4">
+                                <button
+                                  onClick={() => loadFromHistory(entry)}
+                                  disabled={developers.length >= MAX_DEVELOPERS || developers.some(d => d.username === entry.owner && d.repo === entry.repo)}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-500/20 dark:text-blue-300 dark:hover:bg-blue-500/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                  title="Add to current analysis"
+                                >
+                                  <RotateCcw size={12} />
+                                  Re-analyze
+                                </button>
+                                <button
+                                  onClick={() => removeFromHistory(entry.id)}
+                                  className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-500/20 text-gray-400 hover:text-red-500 transition"
+                                  title="Remove from history"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </motion.div>
+            )}
+
+            {/* Comparison Table */}
+            {hasResults && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-10"
+              >
+                <div className="mb-4">
+                  <h3 className="text-xl font-semibold text-gray-900 dark:text-zinc-100">Comparison Overview</h3>
+                  <p className="text-sm text-gray-600 dark:text-zinc-300">
+                    Side-by-side comparison of {resultsArray.length} developer{resultsArray.length > 1 ? "s" : ""}
+                  </p>
+                </div>
+
+                <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-black/5 dark:border-white/10">
+                          <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900 dark:text-zinc-100 bg-black/5 dark:bg-white/5">
+                            Metric
+                          </th>
+                          {resultsArray.map((r) => (
+                            <th
+                              key={r.devId}
+                              className="px-6 py-4 text-center text-sm font-semibold text-gray-900 dark:text-zinc-100 bg-black/5 dark:bg-white/5"
+                            >
+                              <div className="flex items-center justify-center gap-2">
+                                <div
+                                  className="w-3 h-3 rounded-full"
+                                  style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
+                                />
+                                <span>{r.owner}/{r.repo}</span>
+                              </div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {/* Experience Level */}
+                        <tr className="border-b border-black/5 dark:border-white/10">
+                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            <div className="flex items-center gap-2">
+                              <Award size={16} className="text-purple-500" />
+                              Experience Level
+                            </div>
+                          </td>
+                          {resultsArray.map((r) => (
+                            <td key={r.devId} className="px-6 py-4 text-center">
+                              <span className={`px-3 py-1 rounded-full text-sm font-semibold ${toneClasses(r.experienceLevel.tone).badge}`}>
+                                {r.experienceLevel.level}
+                              </span>
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Total Commits */}
+                        <tr className="border-b border-black/5 dark:border-white/10">
+                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            <div className="flex items-center gap-2">
+                              <GitCommit size={16} className="text-blue-500" />
+                              Total Commits
+                            </div>
+                          </td>
+                          {resultsArray.map((r) => (
+                            <td key={r.devId} className="px-6 py-4 text-center text-lg font-semibold text-gray-900 dark:text-zinc-100">
+                              <AnimatedNumber value={r.totalCommits} />
+                            </td>
+                          ))}
+                        </tr>
+                        {/* On-Time Rate */}
+                        <tr className="border-b border-black/5 dark:border-white/10">
+                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            <div className="flex items-center gap-2">
+                              <Clock size={16} className="text-emerald-500" />
+                              On-Time Rate
+                            </div>
+                          </td>
+                          {resultsArray.map((r) => (
+                            <td key={r.devId} className="px-6 py-4 text-center text-lg font-semibold text-emerald-600">
+                              {r.onTimePercentage}%
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Message Quality */}
+                        <tr className="border-b border-black/5 dark:border-white/10">
+                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            <div className="flex items-center gap-2">
+                              <MessageSquare size={16} className="text-purple-500" />
+                              Message Quality
+                            </div>
+                          </td>
+                          {resultsArray.map((r) => (
+                            <td key={r.devId} className="px-6 py-4 text-center text-lg font-semibold text-purple-600">
+                              {r.messageQualityScore}
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Consistency */}
+                        <tr className="border-b border-black/5 dark:border-white/10">
+                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            <div className="flex items-center gap-2">
+                              <Activity size={16} className="text-blue-500" />
+                              Consistency Score
+                            </div>
+                          </td>
+                          {resultsArray.map((r) => (
+                            <td key={r.devId} className="px-6 py-4 text-center text-lg font-semibold text-blue-600">
+                              {r.consistencyScore}
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Avg Commit Size */}
+                        <tr className="border-b border-black/5 dark:border-white/10">
+                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            <div className="flex items-center gap-2">
+                              <FileCode size={16} className="text-amber-500" />
+                              Avg Commit Size
+                            </div>
+                          </td>
+                          {resultsArray.map((r) => (
+                            <td key={r.devId} className="px-6 py-4 text-center text-sm text-gray-900 dark:text-zinc-100">
+                              {formatNumber(r.avgCommitSize)} lines
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Lines Added */}
+                        <tr className="border-b border-black/5 dark:border-white/10">
+                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            Lines Added
+                          </td>
+                          {resultsArray.map((r) => (
+                            <td key={r.devId} className="px-6 py-4 text-center text-sm text-emerald-600 font-medium">
+                              +{formatNumber(r.totalLinesAdded)}
+                            </td>
+                          ))}
+                        </tr>
+                        {/* Lines Deleted */}
+                        <tr>
+                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            Lines Deleted
+                          </td>
+                          {resultsArray.map((r) => (
+                            <td key={r.devId} className="px-6 py-4 text-center text-sm text-red-500 font-medium">
+                              -{formatNumber(r.totalLinesDeleted)}
+                            </td>
+                          ))}
+                        </tr>
+                      </tbody>
+                    </table>
                   </div>
-                  <div className="hidden md:flex items-center gap-2">
-                    <span className="px-3 py-1 rounded-full text-xs font-medium bg-white/70 dark:bg-white/10 border border-black/10 dark:border-white/10 text-gray-700 dark:text-zinc-200">
-                      {username.trim()}/{repo.trim()}
+                </div>
+              </motion.div>
+            )}
+
+            {/* Individual Developer Details (Expandable) */}
+            {resultsArray.map((r) => (
+              <motion.div
+                key={r.devId}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mt-8"
+              >
+                <button
+                  onClick={() => toggleDetails(r.devId)}
+                  className="w-full flex items-center justify-between p-4 rounded-2xl bg-white/70 dark:bg-white/5 border border-black/5 dark:border-white/10 hover:shadow-lg transition"
+                >
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-4 h-4 rounded-full"
+                      style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
+                    />
+                    <span className="text-lg font-semibold text-gray-900 dark:text-zinc-100">
+                      {r.owner}/{r.repo} - Detailed Charts
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${toneClasses(r.experienceLevel.tone).badge}`}>
+                      {r.experienceLevel.level}
                     </span>
                   </div>
-                </div>
+                  {expandedDetails[r.devId] ? (
+                    <ChevronUp size={20} className="text-gray-500" />
+                  ) : (
+                    <ChevronDown size={20} className="text-gray-500" />
+                  )}
+                </button>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  {[
-                    {
-                      label: "Total Commits",
-                      value: data.totalCommits,
-                      icon: <Calendar className="text-blue-600" size={32} />,
-                      valueClass: "text-gray-900 dark:text-zinc-100",
-                    },
-                    {
-                      label: "On‑Time Rate",
-                      value: `${data.onTimePercentage}%`,
-                      icon: <Clock className="text-emerald-600" size={32} />,
-                      valueClass: "text-emerald-600",
-                    },
-                    {
-                      label: "Message Quality",
-                      value: data.messageQualityScore,
-                      icon: <MessageSquare className="text-purple-600" size={32} />,
-                      valueClass: "text-purple-600",
-                    },
-                    {
-                      label: "Consistency",
-                      value: data.consistencyScore,
-                      icon: <Activity className="text-blue-600" size={32} />,
-                      valueClass: "text-blue-600",
-                    },
-                  ].map((m, i) => (
+                <AnimatePresence>
+                  {expandedDetails[r.devId] && (
                     <motion.div
-                      key={m.label}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.05 + i * 0.05 }}
-                      className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-5"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden"
                     >
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-zinc-400">
-                            {m.label}
-                          </p>
-                          <div className={`mt-2 text-3xl font-semibold ${m.valueClass}`}>
-                            {typeof m.value === "number" ? <AnimatedNumber value={m.value} /> : m.value}
+                      {/* Experience Badge */}
+                      <motion.div
+                        className="mt-4 rounded-3xl bg-gradient-to-r from-blue-600 to-purple-600 shadow-2xl p-6 text-white overflow-hidden relative"
+                      >
+                        <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.35),_transparent_55%)]" />
+                        <div className="relative flex items-center justify-between gap-6">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              <h2 className="text-2xl md:text-3xl font-semibold">Experience: {r.experienceLevel.level}</h2>
+                              <span className={`px-3 py-1 rounded-full text-xs font-semibold ${toneClasses(r.experienceLevel.tone).badge}`}>
+                                Score: {r.experienceLevel.score}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              <div>
+                                <p className="text-white/80">Total Lines Changed</p>
+                                <p className="text-xl font-semibold">
+                                  +{formatNumber(r.totalLinesAdded)} / -{formatNumber(r.totalLinesDeleted)}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-white/80">Avg Commit Size</p>
+                                <p className="text-xl font-semibold">{formatNumber(r.avgCommitSize)} lines</p>
+                              </div>
+                            </div>
                           </div>
+                          <Award size={92} className="opacity-20 shrink-0" />
                         </div>
-                        <div className="mt-1">{m.icon}</div>
+                      </motion.div>
+
+                      {/* Charts Grid */}
+                      <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* File Type Diversity */}
+                        <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <FileCode className="text-blue-600" size={22} />
+                            <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">File Type Diversity</h3>
+                          </div>
+                          <ResponsiveContainer width="100%" height={220}>
+                            <PieChart>
+                              <Pie
+                                data={r.fileTypes}
+                                cx="50%"
+                                cy="50%"
+                                labelLine={false}
+                                label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                                outerRadius={80}
+                                fill="#8884d8"
+                                dataKey="value"
+                              >
+                                {r.fileTypes.map((_, index) => (
+                                  <Cell key={`cell-${index}`} fill={FILE_COLORS[index % FILE_COLORS.length]} />
+                                ))}
+                              </Pie>
+                              <Tooltip />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        {/* Commit Sizes */}
+                        <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <GitCommit className="text-emerald-600" size={22} />
+                            <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">Commit Sizes</h3>
+                          </div>
+                          <ResponsiveContainer width="100%" height={220}>
+                            <BarChart data={r.commitSizeDistribution}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="range" tick={{ fontSize: 10 }} />
+                              <YAxis />
+                              <Tooltip />
+                              <Bar dataKey="count" fill={DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        {/* Commit Frequency */}
+                        <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
+                          <div className="flex items-center gap-2 mb-4">
+                            <Activity className="text-purple-600" size={22} />
+                            <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">Commit Frequency</h3>
+                          </div>
+                          <ResponsiveContainer width="100%" height={220}>
+                            <LineChart data={r.consistencyTimeline}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="commit" tick={{ fontSize: 10 }} />
+                              <YAxis />
+                              <Tooltip />
+                              <Line type="monotone" dataKey="days" stroke={DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length]} strokeWidth={2} />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
+                      {/* Second Row Charts */}
+                      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* On-Time vs Late */}
+                        <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
+                          <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100 mb-4">On-Time vs Late</h3>
+                          <ResponsiveContainer width="100%" height={280}>
+                            <PieChart>
+                              <Pie
+                                data={[
+                                  { name: "On-Time", value: r.onTimeCount },
+                                  { name: "Late", value: r.lateCount },
+                                ]}
+                                cx="50%"
+                                cy="50%"
+                                labelLine={false}
+                                label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                                outerRadius={100}
+                                fill="#8884d8"
+                                dataKey="value"
+                              >
+                                {COLORS.map((color, index) => (
+                                  <Cell key={`cell-${index}`} fill={color} />
+                                ))}
+                              </Pie>
+                              <Tooltip />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+
+                        {/* Commits by Weekday */}
+                        <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
+                          <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100 mb-4">Commits by Weekday</h3>
+                          <ResponsiveContainer width="100%" height={280}>
+                            <BarChart data={r.weekdayData}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="day" />
+                              <YAxis />
+                              <Tooltip />
+                              <Bar dataKey="commits" fill={DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
+                      {/* Hourly Distribution */}
+                      <div className="mt-6 rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100 mb-4">Hourly Distribution</h3>
+                        <ResponsiveContainer width="100%" height={280}>
+                          <BarChart data={r.hourlyData}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="hour" tick={{ fontSize: 10 }} />
+                            <YAxis />
+                            <Tooltip />
+                            <Legend />
+                            <Bar dataKey="commits" fill={DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length]} />
+                          </BarChart>
+                        </ResponsiveContainer>
                       </div>
                     </motion.div>
-                  ))}
-                </div>
+                  )}
+                </AnimatePresence>
+              </motion.div>
+            ))}
 
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mt-6 rounded-3xl bg-gradient-to-r from-blue-600 to-purple-600 shadow-2xl p-6 text-white overflow-hidden relative"
-                >
-                  <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.35),_transparent_55%)]" />
-                  <div className="relative flex items-center justify-between gap-6">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h2 className="text-2xl md:text-3xl font-semibold">Experience: {data.experienceLevel.level}</h2>
-                        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${expClasses.badge}`}>
-                          Full details
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <p className="text-white/80">Total Lines Changed</p>
-                          <p className="text-xl font-semibold">
-                            +{formatNumber(data.totalLinesAdded)} / -{formatNumber(data.totalLinesDeleted)}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-white/80">Avg Commit Size</p>
-                          <p className="text-xl font-semibold">{formatNumber(data.avgCommitSize)} lines</p>
-                        </div>
-                      </div>
-                    </div>
-                    <Award size={92} className="opacity-20 shrink-0" />
-                  </div>
-                </motion.div>
-
-                <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
-                    <div className="flex items-center gap-2 mb-4">
-                      <FileCode className="text-blue-600" size={22} />
-                      <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">File Type Diversity</h3>
-                    </div>
-                    <ResponsiveContainer width="100%" height={220}>
-                      <PieChart>
-                        <Pie
-                          data={data.fileTypes}
-                          cx="50%"
-                          cy="50%"
-                          labelLine={false}
-                          label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                          outerRadius={80}
-                          fill="#8884d8"
-                          dataKey="value"
-                        >
-                          {data.fileTypes.map((_, index) => (
-                            <Cell key={`cell-${index}`} fill={FILE_COLORS[index % FILE_COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-
-                  <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
-                    <div className="flex items-center gap-2 mb-4">
-                      <GitCommit className="text-emerald-600" size={22} />
-                      <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">Commit Sizes</h3>
-                    </div>
-                    <ResponsiveContainer width="100%" height={220}>
-                      <BarChart data={data.commitSizeDistribution}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="range" tick={{ fontSize: 10 }} />
-                        <YAxis />
-                        <Tooltip />
-                        <Bar dataKey="count" fill="#10b981" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                    <p className="mt-2 text-xs text-gray-500 dark:text-zinc-400">Lines changed per commit</p>
-                  </div>
-
-                  <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
-                    <div className="flex items-center gap-2 mb-4">
-                      <Activity className="text-purple-600" size={22} />
-                      <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">Commit Frequency</h3>
-                    </div>
-                    <ResponsiveContainer width="100%" height={220}>
-                      <LineChart data={data.consistencyTimeline}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="commit" tick={{ fontSize: 10 }} />
-                        <YAxis />
-                        <Tooltip />
-                        <Line type="monotone" dataKey="days" stroke="#8b5cf6" strokeWidth={2} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                    <p className="mt-2 text-xs text-gray-500 dark:text-zinc-400">Days between commits (first 30 intervals)</p>
-                  </div>
-                </div>
-
-                <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
-                    <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100 mb-4">On‑Time vs Late</h3>
-                    <ResponsiveContainer width="100%" height={320}>
-                      <PieChart>
-                        <Pie
-                          data={[
-                            { name: "On‑Time", value: data.onTimeCount },
-                            { name: "Late", value: data.lateCount },
-                          ]}
-                          cx="50%"
-                          cy="50%"
-                          labelLine={false}
-                          label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                          outerRadius={110}
-                          fill="#8884d8"
-                          dataKey="value"
-                        >
-                          {COLORS.map((color, index) => (
-                            <Cell key={`cell-${index}`} fill={color} />
-                          ))}
-                        </Pie>
-                        <Tooltip />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-
-                  <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
-                    <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100 mb-4">Commits by Weekday</h3>
-                    <ResponsiveContainer width="100%" height={320}>
-                      <BarChart data={data.weekdayData}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="day" />
-                        <YAxis />
-                        <Tooltip />
-                        <Bar dataKey="commits" fill="#3b82f6" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                <div className="mt-8 rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-6">
-                  <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100 mb-4">Hourly Distribution</h3>
-                  <ResponsiveContainer width="100%" height={320}>
-                    <BarChart data={data.hourlyData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="hour" tick={{ fontSize: 10 }} />
-                      <YAxis />
-                      <Tooltip />
-                      <Legend />
-                      <Bar dataKey="commits" fill="#8b5cf6" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-
-                <div className="mt-10 pb-8 text-center text-xs text-gray-500 dark:text-zinc-500">
-                  Built with GitHub REST API • Heavy analysis may hit rate limits
-                </div>
-              </>
+            {/* Footer */}
+            {hasResults && (
+              <div className="mt-10 pb-8 text-center text-xs text-gray-500 dark:text-zinc-500">
+                Built with GitHub REST API • Heavy analysis may hit rate limits
+              </div>
             )}
           </div>
         </div>
@@ -939,17 +1399,11 @@ export default function GitHubCommitAnalyzer() {
   );
 }
 
-// Minimal dev “tests” (no framework) — helps catch regressions in helpers.
-// These run only in development and do not affect the UI.
+// Minimal dev "tests" (no framework)
 function runDevTests() {
-  // Existing tests (kept)
   console.assert(safeExt("src/index.tsx") === "tsx", "safeExt should return file extension");
   console.assert(safeExt("README") === "(no-ext)", "safeExt should handle no extension");
-
-  // Fixed: ensure the string literal is properly terminated
   console.assert(safeExt("a.b.C") === "c", "safeExt should lowercase extension");
-
-  // Added tests
   console.assert(safeExt("a/b/c") === "(no-ext)", "safeExt should handle paths without extension");
   console.assert(safeExt("src/App.jsx") === "jsx", "safeExt should support jsx");
   console.assert(safeExt("src/styles.css") === "css", "safeExt should support css");
@@ -970,7 +1424,6 @@ function runDevTests() {
   console.assert(Object.keys(parseLinkHeader("")).length === 0, "parseLinkHeader should handle empty string");
 }
 
-// Guarded dev execution (some environments don’t define process)
 if (typeof process !== "undefined" && process?.env?.NODE_ENV !== "production") {
   runDevTests();
 }
