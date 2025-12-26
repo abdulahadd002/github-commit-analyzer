@@ -34,6 +34,10 @@ import {
   RotateCcw,
   Download,
   FileText,
+  Link2,
+  UserCheck,
+  Building2,
+  AlertCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import html2canvas from "html2canvas";
@@ -103,11 +107,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function calculateExperienceLevel(totalCommits, onTimePercentage, messageQuality, consistency) {
   let score = 0;
 
-  // Commit volume (35)
-  if (totalCommits > 200) score += 35;
-  else if (totalCommits > 150) score += 30;
-  else if (totalCommits > 100) score += 25;
-  else if (totalCommits > 50) score += 20;
+  // Commit volume (40)
+  if (totalCommits > 200) score += 40;
+  else if (totalCommits > 150) score += 35;
+  else if (totalCommits > 100) score += 30;
+  else if (totalCommits > 50) score += 25;
   else score += 10;
 
   // Work pattern (15)
@@ -116,11 +120,11 @@ function calculateExperienceLevel(totalCommits, onTimePercentage, messageQuality
   else if (onTimePercentage >= 30) score += 5;
   else score += 2;
 
-  // Message quality (30)
-  if (messageQuality >= 50) score += 30;
-  else if (messageQuality >= 40) score += 25;
-  else if (messageQuality >= 30) score += 20;
-  else score += 15;
+  // Message quality (25)
+  if (messageQuality >= 50) score += 25;
+  else if (messageQuality >= 40) score += 20;
+  else if (messageQuality >= 30) score += 15;
+  else score += 10;
 
   // Consistency (20)
   if (consistency >= 70 && totalCommits > 100) score += 20;
@@ -259,6 +263,20 @@ export default function GitHubCommitAnalyzer() {
   const [exportingSinglePDF, setExportingSinglePDF] = useState({}); // { [devId]: boolean }
   const reportRef = useRef(null);
   const singleReportRefs = useRef({}); // { [devId]: ref }
+
+  // Jira integration state
+  const [showJiraPanel, setShowJiraPanel] = useState(false);
+  const [jiraConfig, setJiraConfig] = useState({
+    domain: "", // e.g., "your-company.atlassian.net"
+    email: "",
+    apiToken: "",
+  });
+  const [jiraTeams, setJiraTeams] = useState([]);
+  const [selectedTeam, setSelectedTeam] = useState(null);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [loadingJira, setLoadingJira] = useState(false);
+  const [jiraError, setJiraError] = useState("");
+  const [memberGitHubMappings, setMemberGitHubMappings] = useState({}); // { jiraAccountId: { owner, repo, token } }
 
   // Load history and dark mode preference on mount (client-side only)
   useEffect(() => {
@@ -412,6 +430,307 @@ export default function GitHubCommitAnalyzer() {
       if (prev.length >= MAX_DEVELOPERS) return prev;
       return [...prev, newDev];
     });
+  };
+
+  // Jira integration - Manual team entry mode (CORS prevents direct API calls from browser)
+  const [manualTeamMode, setManualTeamMode] = useState(true);
+  const [manualMembers, setManualMembers] = useState([
+    { id: generateId(), name: "", email: "", owner: "", repo: "", token: "" }
+  ]);
+
+  // Clean domain input (remove https:// if present)
+  const cleanDomain = (domain) => {
+    return domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  };
+
+  // Jira API proxy URL (runs on localhost:3001)
+  const JIRA_PROXY_URL = "http://localhost:3001/api/jira/proxy";
+
+  // Jira API functions using proxy server to bypass CORS
+  const getJiraAuthHeader = () => {
+    const credentials = btoa(`${jiraConfig.email}:${jiraConfig.apiToken}`);
+    return `Basic ${credentials}`;
+  };
+
+  // Helper function to make Jira API calls through proxy
+  const jiraProxyFetch = async (url, options = {}) => {
+    const response = await fetch(JIRA_PROXY_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url,
+        method: options.method || "GET",
+        headers: {
+          "Authorization": getJiraAuthHeader(),
+          ...options.headers,
+        },
+        body: options.body,
+      }),
+    });
+
+    const result = await response.json();
+    return result;
+  };
+
+  const fetchJiraTeams = async () => {
+    if (!jiraConfig.domain || !jiraConfig.email || !jiraConfig.apiToken) {
+      setJiraError("Please fill in all Jira configuration fields");
+      return;
+    }
+
+    setLoadingJira(true);
+    setJiraError("");
+
+    const domain = cleanDomain(jiraConfig.domain);
+
+    try {
+      // First, check if proxy server is running
+      try {
+        const healthCheck = await fetch("http://localhost:3001/api/health");
+        if (!healthCheck.ok) throw new Error("Proxy not running");
+      } catch {
+        throw new Error("Proxy server not running. Please start it with: npm run server");
+      }
+
+      // Try to fetch users who can be assigned to issues (this gives us team members)
+      const usersUrl = `https://${domain}/rest/api/3/users/search?maxResults=50`;
+      const usersResult = await jiraProxyFetch(usersUrl);
+
+      if (usersResult.ok && Array.isArray(usersResult.data)) {
+        // Got users directly
+        const users = usersResult.data.filter(u => u.accountType === "atlassian");
+        if (users.length > 0) {
+          setJiraTeams([{
+            id: "all-users",
+            name: "All Jira Users",
+            type: "users",
+            members: users.map(u => ({
+              accountId: u.accountId,
+              displayName: u.displayName,
+              emailAddress: u.emailAddress || "",
+              avatarUrl: u.avatarUrls?.["48x48"] || "",
+              active: u.active,
+            })),
+          }]);
+          return;
+        }
+      }
+
+      // Try to fetch groups
+      const groupsUrl = `https://${domain}/rest/api/3/groups/picker?maxResults=50`;
+      const groupsResult = await jiraProxyFetch(groupsUrl);
+
+      if (groupsResult.ok && groupsResult.data?.groups) {
+        const groups = groupsResult.data.groups || [];
+        if (groups.length > 0) {
+          setJiraTeams(groups.map(g => ({
+            id: g.groupId || g.name,
+            name: g.name,
+            type: "group",
+          })));
+          return;
+        }
+      }
+
+      // Try project roles as fallback
+      const projectsUrl = `https://${domain}/rest/api/3/project/search?maxResults=10`;
+      const projectsResult = await jiraProxyFetch(projectsUrl);
+
+      if (projectsResult.ok && projectsResult.data?.values?.length > 0) {
+        const projects = projectsResult.data.values;
+        setJiraTeams(projects.map(p => ({
+          id: p.id,
+          name: `Project: ${p.name}`,
+          type: "project",
+          key: p.key,
+        })));
+        return;
+      }
+
+      throw new Error("No teams, groups, or projects found. Please check your Jira permissions.");
+    } catch (error) {
+      console.error("Error fetching Jira teams:", error);
+      setJiraError(error.message || "Failed to fetch teams from Jira");
+    } finally {
+      setLoadingJira(false);
+    }
+  };
+
+  // Manual team member functions
+  const addManualMember = () => {
+    if (manualMembers.length >= MAX_DEVELOPERS) return;
+    setManualMembers(prev => [...prev, { id: generateId(), name: "", email: "", owner: "", repo: "", token: "" }]);
+  };
+
+  const removeManualMember = (id) => {
+    if (manualMembers.length <= 1) return;
+    setManualMembers(prev => prev.filter(m => m.id !== id));
+  };
+
+  const updateManualMember = (id, field, value) => {
+    setManualMembers(prev => prev.map(m => m.id === id ? { ...m, [field]: value } : m));
+  };
+
+  const applyManualMembersToDevelopers = async () => {
+    const validMembers = manualMembers.filter(m => m.owner.trim() && m.repo.trim());
+    if (validMembers.length === 0) {
+      setJiraError("Please enter at least one member with GitHub owner and repository");
+      return;
+    }
+
+    const newDevelopers = validMembers.map(m => ({
+      id: generateId(),
+      username: m.owner.trim(),
+      repo: m.repo.trim(),
+      token: m.token.trim(),
+      jiraMember: m.name ? { displayName: m.name, emailAddress: m.email } : null,
+    }));
+
+    setDevelopers(newDevelopers);
+    setShowJiraPanel(false);
+
+    // Automatically analyze all developers after applying mappings
+    setAnalyzingAll(true);
+
+    // Run analysis for each new developer (pass dev object directly since state hasn't updated yet)
+    await Promise.all(newDevelopers.map(dev => analyzeCommits(dev.id, dev)));
+
+    setAnalyzingAll(false);
+  };
+
+  const fetchTeamMembers = async (team) => {
+    if (!team) return;
+
+    setLoadingJira(true);
+    setJiraError("");
+    setSelectedTeam(team);
+
+    try {
+      let members = [];
+      const domain = cleanDomain(jiraConfig.domain);
+
+      if (team.type === "users" && team.members) {
+        // Already have members from the users search
+        members = team.members;
+      } else if (team.type === "group") {
+        // Fetch group members via proxy
+        const membersUrl = `https://${domain}/rest/api/3/group/member?groupname=${encodeURIComponent(team.name)}&maxResults=50`;
+        const result = await jiraProxyFetch(membersUrl);
+
+        if (!result.ok) {
+          throw new Error(`Failed to fetch group members: ${result.status}`);
+        }
+
+        const data = result.data;
+        members = (data.values || []).map(m => ({
+          accountId: m.accountId,
+          displayName: m.displayName,
+          emailAddress: m.emailAddress || "",
+          avatarUrl: m.avatarUrls?.["48x48"] || "",
+          active: m.active,
+        }));
+      } else if (team.type === "project") {
+        // Fetch project members via assignable users
+        const membersUrl = `https://${domain}/rest/api/3/user/assignable/search?project=${team.key}&maxResults=50`;
+        const result = await jiraProxyFetch(membersUrl);
+
+        if (!result.ok) {
+          throw new Error(`Failed to fetch project members: ${result.status}`);
+        }
+
+        const data = Array.isArray(result.data) ? result.data : [];
+        members = data.filter(u => u.accountType === "atlassian").map(m => ({
+          accountId: m.accountId,
+          displayName: m.displayName,
+          emailAddress: m.emailAddress || "",
+          avatarUrl: m.avatarUrls?.["48x48"] || "",
+          active: m.active,
+        }));
+      } else {
+        // Fetch team members using Team API via proxy
+        const membersUrl = `https://${domain}/rest/teams/1.0/teams/${team.id}/members`;
+        const result = await jiraProxyFetch(membersUrl);
+
+        if (!result.ok) {
+          throw new Error(`Failed to fetch team members: ${result.status}`);
+        }
+
+        const data = result.data;
+        members = (data.members || data || []).map(m => ({
+          accountId: m.accountId || m.id,
+          displayName: m.displayName || m.name,
+          emailAddress: m.emailAddress || "",
+          avatarUrl: m.avatarUrl || m.avatarUrls?.["48x48"] || "",
+          active: true,
+        }));
+      }
+
+      setTeamMembers(members);
+
+      // Initialize mappings for new members
+      const newMappings = { ...memberGitHubMappings };
+      members.forEach(m => {
+        if (!newMappings[m.accountId]) {
+          newMappings[m.accountId] = { owner: "", repo: "", token: "" };
+        }
+      });
+      setMemberGitHubMappings(newMappings);
+    } catch (error) {
+      console.error("Error fetching team members:", error);
+      setJiraError(error.message || "Failed to fetch team members");
+    } finally {
+      setLoadingJira(false);
+    }
+  };
+
+  const updateMemberMapping = (accountId, field, value) => {
+    setMemberGitHubMappings(prev => ({
+      ...prev,
+      [accountId]: {
+        ...prev[accountId],
+        [field]: value,
+      },
+    }));
+  };
+
+  const applyJiraMappingsToDevelopers = async () => {
+    // Filter members with valid GitHub mappings
+    const validMappings = teamMembers
+      .filter(m => {
+        const mapping = memberGitHubMappings[m.accountId];
+        return mapping && mapping.owner.trim() && mapping.repo.trim();
+      })
+      .slice(0, MAX_DEVELOPERS);
+
+    if (validMappings.length === 0) {
+      setJiraError("No valid GitHub mappings found. Please enter owner/repo for at least one team member.");
+      return;
+    }
+
+    // Create new developer entries from mappings
+    const newDevelopers = validMappings.map(m => {
+      const mapping = memberGitHubMappings[m.accountId];
+      return {
+        id: generateId(),
+        username: mapping.owner.trim(),
+        repo: mapping.repo.trim(),
+        token: mapping.token.trim(),
+        jiraMember: m, // Store Jira member info for reference
+      };
+    });
+
+    setDevelopers(newDevelopers);
+    setShowJiraPanel(false);
+
+    // Automatically analyze all developers after applying mappings
+    setAnalyzingAll(true);
+
+    // Run analysis for each new developer (pass dev object directly since state hasn't updated yet)
+    await Promise.all(newDevelopers.map(dev => analyzeCommits(dev.id, dev)));
+
+    setAnalyzingAll(false);
   };
 
   // CSV Export function
@@ -746,8 +1065,8 @@ export default function GitHubCommitAnalyzer() {
   };
 
   // Analysis function for a single developer
-  const analyzeCommits = async (devId) => {
-    const dev = developers.find(d => d.id === devId);
+  const analyzeCommits = async (devId, devOverride = null) => {
+    const dev = devOverride || developers.find(d => d.id === devId);
     if (!dev) return;
 
     if (!dev.username.trim() || !dev.repo.trim()) {
@@ -1094,6 +1413,37 @@ export default function GitHubCommitAnalyzer() {
               </div>
 
               <div className="flex items-center gap-2">
+                {/* Search History Button */}
+                {searchHistory.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowHistory(!showHistory)}
+                    className={`group inline-flex items-center gap-2 px-3 py-2 rounded-2xl border shadow-sm hover:shadow-md transition-all cursor-pointer ${
+                      showHistory
+                        ? "bg-blue-600 border-blue-600 text-white"
+                        : "bg-white/70 dark:bg-white/10 border-black/10 dark:border-white/10 hover:bg-white dark:hover:bg-white/20"
+                    }`}
+                    title="Search History"
+                  >
+                    <History size={18} className={showHistory ? "text-white" : "text-blue-600 dark:text-blue-400"} />
+                    <span className="hidden sm:inline text-sm">{searchHistory.length}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setShowJiraPanel(!showJiraPanel)}
+                  className={`group inline-flex items-center gap-2 px-3 py-2 rounded-2xl border shadow-sm hover:shadow-md transition-all cursor-pointer ${
+                    showJiraPanel
+                      ? "bg-blue-600 border-blue-600 text-white"
+                      : "bg-white/70 dark:bg-white/10 border-black/10 dark:border-white/10 hover:bg-white dark:hover:bg-white/20"
+                  }`}
+                  title="Import from Jira Team"
+                >
+                  <Building2 size={18} className={showJiraPanel ? "text-white" : "text-blue-600 dark:text-blue-400"} />
+                  <span className="hidden sm:inline text-sm">{showJiraPanel ? "Close Jira" : "Jira Team"}</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={toggleDark}
@@ -1114,6 +1464,450 @@ export default function GitHubCommitAnalyzer() {
                 </button>
               </div>
             </div>
+
+            {/* Jira Integration Panel */}
+            <AnimatePresence>
+              {showJiraPanel && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="mb-6 overflow-hidden"
+                >
+                  <div className="rounded-3xl border border-blue-200 dark:border-blue-500/30 bg-blue-50/50 dark:bg-blue-500/10 backdrop-blur-xl shadow-xl p-6">
+                    <div className="flex items-center justify-between gap-3 mb-5">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-xl bg-blue-600 flex items-center justify-center">
+                          <Building2 size={20} className="text-white" />
+                        </div>
+                        <div>
+                          <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Team Integration</h2>
+                          <p className="text-sm text-gray-600 dark:text-zinc-300">
+                            Add team members and map them to GitHub repositories
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Mode Toggle */}
+                      <div className="flex items-center gap-2 bg-white/50 dark:bg-white/5 rounded-xl p-1">
+                        <button
+                          onClick={() => setManualTeamMode(true)}
+                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+                            manualTeamMode
+                              ? "bg-blue-600 text-white"
+                              : "text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-zinc-200"
+                          }`}
+                        >
+                          Manual Entry
+                        </button>
+                        <button
+                          onClick={() => setManualTeamMode(false)}
+                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
+                            !manualTeamMode
+                              ? "bg-blue-600 text-white"
+                              : "text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-zinc-200"
+                          }`}
+                        >
+                          Jira API
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Jira Error */}
+                    {jiraError && (
+                      <div className="mb-5 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/30 p-3 flex items-start gap-2">
+                        <AlertCircle size={16} className="text-red-500 mt-0.5 shrink-0" />
+                        <p className="text-sm text-red-800 dark:text-red-200">{jiraError}</p>
+                      </div>
+                    )}
+
+                    {/* Manual Entry Mode */}
+                    {manualTeamMode && (
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <label className="block text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            Team Members ({manualMembers.length}/{MAX_DEVELOPERS})
+                          </label>
+                          <button
+                            onClick={addManualMember}
+                            disabled={manualMembers.length >= MAX_DEVELOPERS}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-100 hover:bg-blue-200 dark:bg-blue-500/20 dark:hover:bg-blue-500/30 text-blue-700 dark:text-blue-300 text-sm font-medium transition disabled:opacity-50"
+                          >
+                            <Plus size={14} />
+                            Add Member
+                          </button>
+                        </div>
+
+                        <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
+                          {manualMembers.map((member, index) => (
+                            <div
+                              key={member.id}
+                              className="flex items-center gap-3 p-3 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10"
+                            >
+                              <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center text-sm font-semibold text-blue-600 dark:text-blue-400">
+                                {index + 1}
+                              </div>
+
+                              <div className="flex-1 grid grid-cols-2 md:grid-cols-5 gap-2">
+                                <input
+                                  type="text"
+                                  placeholder="Name (optional)"
+                                  value={member.name}
+                                  onChange={(e) => updateManualMember(member.id, "name", e.target.value)}
+                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                />
+                                <input
+                                  type="text"
+                                  placeholder="GitHub Owner *"
+                                  value={member.owner}
+                                  onChange={(e) => updateManualMember(member.id, "owner", e.target.value)}
+                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                />
+                                <input
+                                  type="text"
+                                  placeholder="Repository *"
+                                  value={member.repo}
+                                  onChange={(e) => updateManualMember(member.id, "repo", e.target.value)}
+                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                />
+                                <input
+                                  type="password"
+                                  placeholder="GitHub Token"
+                                  value={member.token}
+                                  onChange={(e) => updateManualMember(member.id, "token", e.target.value)}
+                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                />
+                                <button
+                                  onClick={() => removeManualMember(member.id)}
+                                  disabled={manualMembers.length <= 1}
+                                  className="px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 text-red-600 dark:text-red-400 transition disabled:opacity-30"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="mt-4 flex justify-end">
+                          <button
+                            onClick={applyManualMembersToDevelopers}
+                            disabled={analyzingAll || manualMembers.filter(m => m.owner && m.repo).length === 0}
+                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-medium transition shadow-lg disabled:opacity-60"
+                          >
+                            {analyzingAll ? (
+                              <>
+                                <RefreshCw size={16} className="animate-spin" />
+                                Analyzing...
+                              </>
+                            ) : (
+                              <>
+                                <UserCheck size={16} />
+                                Analyze Team ({manualMembers.filter(m => m.owner && m.repo).length} ready)
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Jira API Mode */}
+                    {!manualTeamMode && (
+                      <>
+                        {/* CORS Warning */}
+                        <div className="mb-5 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 p-3">
+                          <p className="text-sm text-amber-800 dark:text-amber-200">
+                            <strong>Note:</strong> Due to browser security (CORS), direct Jira API calls may fail.
+                            If you encounter errors, please use the <strong>Manual Entry</strong> mode instead.
+                          </p>
+                        </div>
+
+                        {/* Jira Configuration */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-1">
+                              Jira Domain
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="your-company.atlassian.net"
+                              value={jiraConfig.domain}
+                              onChange={(e) => setJiraConfig({ ...jiraConfig, domain: e.target.value })}
+                              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                            />
+                            <p className="text-xs text-gray-500 dark:text-zinc-500 mt-1">Without https://</p>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-1">
+                              Email
+                            </label>
+                            <input
+                              type="email"
+                              placeholder="your-email@company.com"
+                              value={jiraConfig.email}
+                              onChange={(e) => setJiraConfig({ ...jiraConfig, email: e.target.value })}
+                              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-1">
+                              API Token
+                            </label>
+                            <input
+                              type="password"
+                              placeholder="Jira API Token"
+                              value={jiraConfig.apiToken}
+                              onChange={(e) => setJiraConfig({ ...jiraConfig, apiToken: e.target.value })}
+                              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3 mb-5">
+                          <button
+                            onClick={fetchJiraTeams}
+                            disabled={loadingJira || !jiraConfig.domain || !jiraConfig.email || !jiraConfig.apiToken}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white text-sm font-medium transition disabled:opacity-50"
+                          >
+                            {loadingJira ? (
+                              <>
+                                <RefreshCw size={16} className="animate-spin" />
+                                Connecting...
+                              </>
+                            ) : (
+                              <>
+                                <Link2 size={16} />
+                                Fetch Teams
+                              </>
+                            )}
+                          </button>
+                          <a
+                            href="https://id.atlassian.com/manage-profile/security/api-tokens"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                          >
+                            Get API Token →
+                          </a>
+                        </div>
+
+                        {/* Teams List */}
+                        {jiraTeams.length > 0 && (
+                          <div className="mb-5">
+                            <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-2">
+                              Select a Team/Group
+                            </label>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                              {jiraTeams.map((team) => (
+                                <button
+                                  key={team.id}
+                              onClick={() => fetchTeamMembers(team)}
+                              className={`px-4 py-2 rounded-xl text-sm font-medium transition ${
+                                selectedTeam?.id === team.id
+                                  ? "bg-blue-600 text-white"
+                                  : "bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-700 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-white/10"
+                              }`}
+                            >
+                              <span className="flex items-center gap-2">
+                                <Users size={14} />
+                                {team.name}
+                              </span>
+                            </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Team Members with GitHub Mapping */}
+                        {teamMembers.length > 0 && (
+                          <div>
+                            <div className="flex items-center justify-between mb-3">
+                              <label className="block text-sm font-medium text-gray-700 dark:text-zinc-300">
+                                Team Members - Map to GitHub Repositories ({teamMembers.length} members)
+                              </label>
+                              <span className="text-xs text-gray-500 dark:text-zinc-400">
+                                Max {MAX_DEVELOPERS} will be analyzed
+                              </span>
+                            </div>
+                            <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
+                              {teamMembers.map((member) => (
+                                <div
+                                  key={member.accountId}
+                                  className="flex items-center gap-4 p-3 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10"
+                                >
+                                  {/* Member Info */}
+                                  <div className="flex items-center gap-3 min-w-[200px]">
+                                    {member.avatarUrl ? (
+                                      <img
+                                        src={member.avatarUrl}
+                                        alt={member.displayName}
+                                        className="w-8 h-8 rounded-full"
+                                      />
+                                    ) : (
+                                      <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center">
+                                        <UserCheck size={16} className="text-blue-600 dark:text-blue-400" />
+                                      </div>
+                                    )}
+                                    <div>
+                                      <p className="text-sm font-medium text-gray-900 dark:text-zinc-100">
+                                        {member.displayName}
+                                      </p>
+                                      {member.emailAddress && (
+                                        <p className="text-xs text-gray-500 dark:text-zinc-400">
+                                          {member.emailAddress}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* GitHub Mapping Inputs */}
+                                  <div className="flex-1 grid grid-cols-3 gap-2">
+                                    <input
+                                      type="text"
+                                      placeholder="GitHub Owner"
+                                      value={memberGitHubMappings[member.accountId]?.owner || ""}
+                                      onChange={(e) => updateMemberMapping(member.accountId, "owner", e.target.value)}
+                                      className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                    />
+                                    <input
+                                      type="text"
+                                      placeholder="Repository"
+                                      value={memberGitHubMappings[member.accountId]?.repo || ""}
+                                      onChange={(e) => updateMemberMapping(member.accountId, "repo", e.target.value)}
+                                      className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                    />
+                                    <input
+                                      type="password"
+                                      placeholder="GitHub Token (optional)"
+                                      value={memberGitHubMappings[member.accountId]?.token || ""}
+                                      onChange={(e) => updateMemberMapping(member.accountId, "token", e.target.value)}
+                                      className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                    />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Apply & Analyze Button */}
+                            <div className="mt-4 flex justify-end">
+                              <button
+                                onClick={applyJiraMappingsToDevelopers}
+                                disabled={analyzingAll || teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner && memberGitHubMappings[m.accountId]?.repo).length === 0}
+                                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-medium transition shadow-lg disabled:opacity-60"
+                              >
+                                {analyzingAll ? (
+                                  <>
+                                    <RefreshCw size={16} className="animate-spin" />
+                                    Analyzing...
+                                  </>
+                                ) : (
+                                  <>
+                                    <UserCheck size={16} />
+                                    Analyze Team ({teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner && memberGitHubMappings[m.accountId]?.repo).length} mapped)
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Search History Panel */}
+            <AnimatePresence>
+              {showHistory && searchHistory.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="mb-6 overflow-hidden"
+                >
+                  <div className="rounded-3xl border border-blue-200 dark:border-blue-500/30 bg-blue-50/50 dark:bg-blue-500/10 backdrop-blur-xl shadow-xl p-6">
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-xl bg-blue-600 flex items-center justify-center">
+                          <History size={20} className="text-white" />
+                        </div>
+                        <div>
+                          <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Search History</h2>
+                          <p className="text-sm text-gray-600 dark:text-zinc-300">
+                            {searchHistory.length} previous {searchHistory.length === 1 ? "analysis" : "analyses"} saved
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            if (confirm("Clear all search history?")) {
+                              clearHistory();
+                            }
+                          }}
+                          className="px-3 py-1.5 rounded-xl text-xs font-medium text-red-600 hover:bg-red-100 dark:hover:bg-red-500/20 transition"
+                        >
+                          Clear All
+                        </button>
+                        <button
+                          onClick={() => setShowHistory(false)}
+                          className="p-1.5 rounded-lg hover:bg-white/50 dark:hover:bg-white/10 transition"
+                        >
+                          <X size={18} className="text-gray-500" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 max-h-80 overflow-y-auto">
+                      {searchHistory.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="flex items-center justify-between p-4 rounded-2xl bg-white/70 dark:bg-white/5 border border-black/5 dark:border-white/10"
+                        >
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="font-medium text-gray-900 dark:text-zinc-100">
+                                {entry.owner}/{entry.repo}
+                              </span>
+                              <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${toneClasses(entry.experienceLevel.tone).badge}`}>
+                                {entry.experienceLevel.level}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500 dark:text-zinc-400">
+                              <span>{entry.totalCommits} commits</span>
+                              <span>Score: {entry.experienceLevel.score}</span>
+                              <span>Quality: {entry.messageQualityScore}</span>
+                              <span className="text-gray-400">
+                                {new Date(entry.analyzedAt).toLocaleDateString()} {new Date(entry.analyzedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 ml-4">
+                            <button
+                              onClick={() => loadFromHistory(entry)}
+                              disabled={developers.length >= MAX_DEVELOPERS || developers.some(d => d.username === entry.owner && d.repo === entry.repo)}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-500/20 dark:text-blue-300 dark:hover:bg-blue-500/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Add to current analysis"
+                            >
+                              <RotateCcw size={12} />
+                              Re-analyze
+                            </button>
+                            <button
+                              onClick={() => removeFromHistory(entry.id)}
+                              className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-500/20 text-gray-400 hover:text-red-500 transition"
+                              title="Remove from history"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Developer Input Cards */}
             <motion.div
@@ -1305,107 +2099,6 @@ export default function GitHubCommitAnalyzer() {
                 </div>
               </div>
             </motion.div>
-
-            {/* Search History Section */}
-            {searchHistory.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="mt-6 rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-xl"
-              >
-                <div className="p-6">
-                  <button
-                    onClick={() => setShowHistory(!showHistory)}
-                    className="w-full flex items-center justify-between"
-                  >
-                    <div className="flex items-center gap-3">
-                      <History size={20} className="text-blue-600" />
-                      <div className="text-left">
-                        <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Search History</h2>
-                        <p className="text-sm text-gray-600 dark:text-zinc-300">
-                          {searchHistory.length} previous {searchHistory.length === 1 ? "analysis" : "analyses"} saved
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (confirm("Clear all search history?")) {
-                            clearHistory();
-                          }
-                        }}
-                        className="px-3 py-1.5 rounded-xl text-xs font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-500/10 transition"
-                      >
-                        Clear All
-                      </button>
-                      {showHistory ? (
-                        <ChevronUp size={20} className="text-gray-500" />
-                      ) : (
-                        <ChevronDown size={20} className="text-gray-500" />
-                      )}
-                    </div>
-                  </button>
-
-                  <AnimatePresence>
-                    {showHistory && (
-                      <motion.div
-                        initial={{ opacity: 0, height: 0 }}
-                        animate={{ opacity: 1, height: "auto" }}
-                        exit={{ opacity: 0, height: 0 }}
-                        className="overflow-hidden"
-                      >
-                        <div className="mt-4 space-y-3 max-h-96 overflow-y-auto">
-                          {searchHistory.map((entry) => (
-                            <div
-                              key={entry.id}
-                              className="flex items-center justify-between p-4 rounded-2xl bg-white/50 dark:bg-white/5 border border-black/5 dark:border-white/10"
-                            >
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="font-medium text-gray-900 dark:text-zinc-100">
-                                    {entry.owner}/{entry.repo}
-                                  </span>
-                                  <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${toneClasses(entry.experienceLevel.tone).badge}`}>
-                                    {entry.experienceLevel.level}
-                                  </span>
-                                </div>
-                                <div className="flex flex-wrap items-center gap-3 text-xs text-gray-500 dark:text-zinc-400">
-                                  <span>{entry.totalCommits} commits</span>
-                                  <span>Score: {entry.experienceLevel.score}</span>
-                                  <span>Quality: {entry.messageQualityScore}</span>
-                                  <span className="text-gray-400">
-                                    {new Date(entry.analyzedAt).toLocaleDateString()} {new Date(entry.analyzedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2 ml-4">
-                                <button
-                                  onClick={() => loadFromHistory(entry)}
-                                  disabled={developers.length >= MAX_DEVELOPERS || developers.some(d => d.username === entry.owner && d.repo === entry.repo)}
-                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-500/20 dark:text-blue-300 dark:hover:bg-blue-500/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                  title="Add to current analysis"
-                                >
-                                  <RotateCcw size={12} />
-                                  Re-analyze
-                                </button>
-                                <button
-                                  onClick={() => removeFromHistory(entry.id)}
-                                  className="p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-500/20 text-gray-400 hover:text-red-500 transition"
-                                  title="Remove from history"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              </motion.div>
-            )}
 
             {/* Export buttons - shown when there are results */}
             {hasResults && (
