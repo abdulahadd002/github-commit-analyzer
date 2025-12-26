@@ -240,9 +240,12 @@ function saveHistory(history) {
 }
 
 export default function GitHubCommitAnalyzer() {
+  // Shared GitHub token for all developers
+  const [sharedToken, setSharedToken] = useState("");
+
   // Multi-developer state
   const [developers, setDevelopers] = useState([
-    { id: generateId(), username: "", repo: "", token: "" }
+    { id: generateId(), username: "", repo: "" }
   ]);
   const [results, setResults] = useState({}); // { [id]: data }
   const [loadingStates, setLoadingStates] = useState({}); // { [id]: boolean }
@@ -322,18 +325,23 @@ export default function GitHubCommitAnalyzer() {
 
   // Developer management functions
   const addDeveloper = () => {
-    if (developers.length >= MAX_DEVELOPERS) return;
-    setDevelopers([...developers, { id: generateId(), username: "", repo: "", token: "" }]);
+    setDevelopers(prev => {
+      if (prev.length >= MAX_DEVELOPERS) return prev;
+      return [...prev, { id: generateId(), username: "", repo: "" }];
+    });
   };
 
   const removeDeveloper = (id) => {
-    if (developers.length <= 1) return;
+    // Use functional update to avoid stale state issues
+    setDevelopers(prev => {
+      if (prev.length <= 1) return prev;
+      return prev.filter(d => d.id !== id);
+    });
     // Stop any running analysis
     if (abortRefs.current[id]) {
       abortRefs.current[id].abort();
       delete abortRefs.current[id];
     }
-    setDevelopers(developers.filter(d => d.id !== id));
     // Clean up state
     setResults(prev => { const n = { ...prev }; delete n[id]; return n; });
     setLoadingStates(prev => { const n = { ...prev }; delete n[id]; return n; });
@@ -344,7 +352,7 @@ export default function GitHubCommitAnalyzer() {
   };
 
   const updateDeveloper = (id, field, value) => {
-    setDevelopers(developers.map(d =>
+    setDevelopers(prev => prev.map(d =>
       d.id === id ? { ...d, [field]: value } : d
     ));
   };
@@ -435,7 +443,7 @@ export default function GitHubCommitAnalyzer() {
   // Jira integration - Manual team entry mode (CORS prevents direct API calls from browser)
   const [manualTeamMode, setManualTeamMode] = useState(true);
   const [manualMembers, setManualMembers] = useState([
-    { id: generateId(), name: "", email: "", owner: "", repo: "", token: "" }
+    { id: generateId(), name: "", email: "", owner: "", repo: "" }
   ]);
 
   // Clean domain input (remove https:// if present)
@@ -561,7 +569,7 @@ export default function GitHubCommitAnalyzer() {
   // Manual team member functions
   const addManualMember = () => {
     if (manualMembers.length >= MAX_DEVELOPERS) return;
-    setManualMembers(prev => [...prev, { id: generateId(), name: "", email: "", owner: "", repo: "", token: "" }]);
+    setManualMembers(prev => [...prev, { id: generateId(), name: "", email: "", owner: "", repo: "" }]);
   };
 
   const removeManualMember = (id) => {
@@ -574,17 +582,17 @@ export default function GitHubCommitAnalyzer() {
   };
 
   const applyManualMembersToDevelopers = async () => {
-    const validMembers = manualMembers.filter(m => m.owner.trim() && m.repo.trim());
+    // Only owner is required now - repo is optional
+    const validMembers = manualMembers.filter(m => m.owner.trim());
     if (validMembers.length === 0) {
-      setJiraError("Please enter at least one member with GitHub owner and repository");
+      setJiraError("Please enter at least one member with a GitHub owner");
       return;
     }
 
     const newDevelopers = validMembers.map(m => ({
       id: generateId(),
       username: m.owner.trim(),
-      repo: m.repo.trim(),
-      token: m.token.trim(),
+      repo: m.repo ? m.repo.trim() : "",
       jiraMember: m.name ? { displayName: m.name, emailAddress: m.email } : null,
     }));
 
@@ -673,7 +681,7 @@ export default function GitHubCommitAnalyzer() {
       const newMappings = { ...memberGitHubMappings };
       members.forEach(m => {
         if (!newMappings[m.accountId]) {
-          newMappings[m.accountId] = { owner: "", repo: "", token: "" };
+          newMappings[m.accountId] = { owner: "", repo: "" };
         }
       });
       setMemberGitHubMappings(newMappings);
@@ -696,16 +704,16 @@ export default function GitHubCommitAnalyzer() {
   };
 
   const applyJiraMappingsToDevelopers = async () => {
-    // Filter members with valid GitHub mappings
+    // Filter members with valid GitHub mappings - only owner is required now
     const validMappings = teamMembers
       .filter(m => {
         const mapping = memberGitHubMappings[m.accountId];
-        return mapping && mapping.owner.trim() && mapping.repo.trim();
+        return mapping && mapping.owner.trim();
       })
       .slice(0, MAX_DEVELOPERS);
 
     if (validMappings.length === 0) {
-      setJiraError("No valid GitHub mappings found. Please enter owner/repo for at least one team member.");
+      setJiraError("No valid GitHub mappings found. Please enter at least a GitHub owner for one team member.");
       return;
     }
 
@@ -715,8 +723,7 @@ export default function GitHubCommitAnalyzer() {
       return {
         id: generateId(),
         username: mapping.owner.trim(),
-        repo: mapping.repo.trim(),
-        token: mapping.token.trim(),
+        repo: mapping.repo ? mapping.repo.trim() : "",
         jiraMember: m, // Store Jira member info for reference
       };
     });
@@ -1065,12 +1072,84 @@ export default function GitHubCommitAnalyzer() {
   };
 
   // Analysis function for a single developer
+  // Helper function to fetch user's recent repositories
+  const fetchUserRepos = async (username, headers, signal) => {
+    const reposUrl = `https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=pushed&per_page=30`;
+    const { resp, json } = await fetchJson(reposUrl, { headers, signal });
+
+    if (!resp.ok) {
+      if (resp.status === 404) throw new Error("User not found (check username spelling)");
+      if (resp.status === 401) throw new Error("Unauthorized: token invalid or missing required scopes");
+      if (resp.status === 403) throw new Error("GitHub API rate-limited. Try again later or use a token.");
+      throw new Error(`GitHub API error: ${resp.status}`);
+    }
+
+    if (!Array.isArray(json) || json.length === 0) {
+      throw new Error("No public repositories found for this user");
+    }
+
+    // Return repos sorted by most recently pushed
+    return json.filter(r => !r.fork).slice(0, 20); // Get up to 20 non-fork repos
+  };
+
+  // Helper function to fetch commits from a single repo
+  const fetchRepoCommits = async (owner, repoName, defaultBranch, headers, signal, maxCommits = null, throwOnError = false) => {
+    const commits = [];
+    const seenShas = new Set();
+    const seenPageUrls = new Set();
+    let nextUrl = `https://api.github.com/repos/${owner}/${repoName}/commits?per_page=100${
+      defaultBranch ? `&sha=${encodeURIComponent(defaultBranch)}` : ""
+    }`;
+
+    let pageCount = 0;
+    while (nextUrl) {
+      if (seenPageUrls.has(nextUrl)) break;
+      seenPageUrls.add(nextUrl);
+
+      pageCount++;
+      const { resp, json, rawText } = await fetchJson(nextUrl, { headers, signal });
+
+      if (!resp.ok) {
+        if (throwOnError) {
+          if (resp.status === 404) throw new Error("Repository not found or no commits on default branch");
+          if (resp.status === 409) throw new Error("Repository is empty (no commits yet)");
+          if (resp.status === 403) {
+            const msg = (json && (json.message || json.error)) || rawText || "Rate limited";
+            throw new Error(`GitHub API error: ${msg}`);
+          }
+          throw new Error(`GitHub API error: ${resp.status}`);
+        }
+        break; // Skip repos with errors in multi-repo mode
+      }
+      if (!Array.isArray(json) || json.length === 0) break;
+
+      for (const c of json) {
+        const sha = c?.sha;
+        if (sha && seenShas.has(sha)) continue;
+        if (sha) seenShas.add(sha);
+        commits.push({ ...c, _repoName: repoName });
+
+        // Stop if we've reached maxCommits
+        if (maxCommits && commits.length >= maxCommits) {
+          return commits;
+        }
+      }
+
+      const links = parseLinkHeader(resp.headers.get("link"));
+      nextUrl = links.next || "";
+
+      if (pageCount % 3 === 0) await sleep(0);
+    }
+
+    return commits;
+  };
+
   const analyzeCommits = async (devId, devOverride = null) => {
     const dev = devOverride || developers.find(d => d.id === devId);
     if (!dev) return;
 
-    if (!dev.username.trim() || !dev.repo.trim()) {
-      setErrors(prev => ({ ...prev, [devId]: "Please enter both owner and repository name" }));
+    if (!dev.username.trim()) {
+      setErrors(prev => ({ ...prev, [devId]: "Please enter a GitHub username/owner" }));
       return;
     }
 
@@ -1087,91 +1166,101 @@ export default function GitHubCommitAnalyzer() {
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
     };
-    if (dev.token.trim()) headers.Authorization = `Bearer ${dev.token.trim()}`;
+    if (sharedToken.trim()) headers.Authorization = `Bearer ${sharedToken.trim()}`;
 
     try {
       const owner = encodeURIComponent(dev.username.trim());
-      const name = encodeURIComponent(dev.repo.trim());
+      const hasSpecificRepo = dev.repo && dev.repo.trim();
+      const TARGET_COMMITS = 210;
 
-      // 0) Try repo metadata
-      let defaultBranch = "";
-      let metaWarning = "";
-      try {
-        const repoMetaUrl = `https://api.github.com/repos/${owner}/${name}`;
-        const metaRes = await fetchJson(repoMetaUrl, { headers, signal: controller.signal });
+      let allCommits = [];
+      let reposAnalyzed = [];
 
-        if (metaRes.resp.ok && metaRes.json) {
-          defaultBranch = metaRes.json.default_branch || "";
-        } else {
-          const msg = (metaRes.json && (metaRes.json.message || metaRes.json.error)) || metaRes.rawText || "";
+      if (hasSpecificRepo) {
+        // Single repo mode - existing behavior
+        const name = encodeURIComponent(dev.repo.trim());
+        reposAnalyzed = [dev.repo.trim()];
 
-          if (metaRes.resp.status === 403) {
-            metaWarning = "Repo metadata blocked (403). Falling back to commit listing." + (msg ? ` (${msg})` : "");
-          } else if (metaRes.resp.status === 404) {
-            throw new Error("Repo not found (check owner/repo spelling and access)");
-          } else if (metaRes.resp.status === 401) {
-            metaWarning = "Token unauthorized (401). Falling back to unauthenticated commit listing.";
+        // 0) Try repo metadata
+        let defaultBranch = "";
+        let metaWarning = "";
+        try {
+          const repoMetaUrl = `https://api.github.com/repos/${owner}/${name}`;
+          const metaRes = await fetchJson(repoMetaUrl, { headers, signal: controller.signal });
+
+          if (metaRes.resp.ok && metaRes.json) {
+            defaultBranch = metaRes.json.default_branch || "";
           } else {
-            metaWarning = `Repo metadata unavailable (${metaRes.resp.status}). Falling back to commit listing.`;
+            const msg = (metaRes.json && (metaRes.json.message || metaRes.json.error)) || metaRes.rawText || "";
+
+            if (metaRes.resp.status === 403) {
+              metaWarning = "Repo metadata blocked (403). Falling back to commit listing." + (msg ? ` (${msg})` : "");
+            } else if (metaRes.resp.status === 404) {
+              throw new Error("Repo not found (check owner/repo spelling and access)");
+            } else if (metaRes.resp.status === 401) {
+              metaWarning = "Token unauthorized (401). Falling back to unauthenticated commit listing.";
+            } else {
+              metaWarning = `Repo metadata unavailable (${metaRes.resp.status}). Falling back to commit listing.`;
+            }
           }
-        }
-      } catch (e) {
-        if (e?.name === "AbortError") throw e;
-        metaWarning = "Could not read repo metadata. Falling back to commit listing.";
-      }
-
-      if (metaWarning) setErrors(prev => ({ ...prev, [devId]: metaWarning }));
-
-      // 1) Fetch ALL commits
-      const allCommits = [];
-      const seenShas = new Set();
-      const seenPageUrls = new Set();
-      let nextUrl = `https://api.github.com/repos/${owner}/${name}/commits?per_page=100${
-        defaultBranch ? `&sha=${encodeURIComponent(defaultBranch)}` : ""
-      }`;
-
-      let pageCount = 0;
-      while (nextUrl) {
-        if (seenPageUrls.has(nextUrl)) break;
-        seenPageUrls.add(nextUrl);
-
-        pageCount++;
-        const { resp, json, rawText } = await fetchJson(nextUrl, { headers, signal: controller.signal });
-
-        if (!resp.ok) {
-          if (resp.status === 404) throw new Error("Repo not found (check owner/repo spelling and access)");
-          if (resp.status === 401) throw new Error("Unauthorized: token invalid or missing required scopes");
-          if (resp.status === 403) {
-            const resetTs = resp.headers.get("x-ratelimit-reset");
-            const remaining = resp.headers.get("x-ratelimit-remaining");
-            const msg = (json && (json.message || json.error)) || rawText || "GitHub API rate-limited or forbidden";
-            throw new Error(
-              `${msg}${remaining !== null ? ` (remaining: ${remaining})` : ""}${
-                resetTs ? ` (reset: ${new Date(Number(resetTs) * 1000).toLocaleString()})` : ""
-              }`
-            );
-          }
-          throw new Error(`GitHub API error: ${resp.status}`);
+        } catch (e) {
+          if (e?.name === "AbortError") throw e;
+          // Re-throw errors that we explicitly threw (like 404)
+          if (e?.message?.includes("Repo not found")) throw e;
+          metaWarning = "Could not read repo metadata. Falling back to commit listing.";
         }
 
-        if (!Array.isArray(json) || json.length === 0) break;
+        if (metaWarning) setErrors(prev => ({ ...prev, [devId]: metaWarning }));
 
-        for (const c of json) {
-          const sha = c?.sha;
-          if (sha && seenShas.has(sha)) continue;
-          if (sha) seenShas.add(sha);
-          allCommits.push(c);
+        // Fetch commits from single repo - throw errors for better feedback
+        allCommits = await fetchRepoCommits(owner, name, defaultBranch, headers, controller.signal, null, true);
+
+        // If no commits found with default branch, try without specifying branch
+        if (allCommits.length === 0 && defaultBranch) {
+          allCommits = await fetchRepoCommits(owner, name, "", headers, controller.signal, null, true);
         }
 
         setProgresses(prev => ({ ...prev, [devId]: { current: allCommits.length, total: 0, pct: 0 } }));
+      } else {
+        // Multi-repo mode - fetch from recent repositories
+        setErrors(prev => ({ ...prev, [devId]: "Fetching recent repositories..." }));
 
-        const links = parseLinkHeader(resp.headers.get("link"));
-        nextUrl = links.next || "";
+        const repos = await fetchUserRepos(dev.username.trim(), headers, controller.signal);
 
-        if (pageCount % 3 === 0) await sleep(0);
+        setErrors(prev => ({ ...prev, [devId]: `Found ${repos.length} repositories. Fetching commits...` }));
+
+        // Fetch commits from each repo until we reach TARGET_COMMITS
+        for (const repo of repos) {
+          if (allCommits.length >= TARGET_COMMITS) break;
+
+          const remaining = TARGET_COMMITS - allCommits.length;
+          const repoCommits = await fetchRepoCommits(
+            owner,
+            repo.name,
+            repo.default_branch,
+            headers,
+            controller.signal,
+            remaining
+          );
+
+          if (repoCommits.length > 0) {
+            reposAnalyzed.push(repo.name);
+            allCommits.push(...repoCommits);
+          }
+
+          setProgresses(prev => ({ ...prev, [devId]: { current: allCommits.length, total: TARGET_COMMITS, pct: (allCommits.length / TARGET_COMMITS) * 100 } }));
+          setErrors(prev => ({ ...prev, [devId]: `Fetched ${allCommits.length} commits from ${reposAnalyzed.length} repos...` }));
+        }
+
+        setErrors(prev => ({ ...prev, [devId]: "" }));
       }
 
-      if (allCommits.length === 0) throw new Error("No commits found");
+      if (allCommits.length === 0) {
+        throw new Error(hasSpecificRepo
+          ? `No commits found in ${dev.repo.trim()}. Check if the repository exists and has commits, or try without specifying a repo.`
+          : "No commits found in any of the user's public repositories."
+        );
+      }
 
       // 2) Base distributions
       let onTimeCount = 0;
@@ -1319,7 +1408,9 @@ export default function GitHubCommitAnalyzer() {
 
       const resultData = {
         owner: dev.username.trim(),
-        repo: dev.repo.trim(),
+        repo: hasSpecificRepo ? dev.repo.trim() : reposAnalyzed.join(", "),
+        reposAnalyzed: reposAnalyzed,
+        isMultiRepo: !hasSpecificRepo,
         totalCommits,
         onTimeCount,
         lateCount,
@@ -1362,7 +1453,8 @@ export default function GitHubCommitAnalyzer() {
 
   // Analyze all developers
   const analyzeAllDevelopers = async () => {
-    const validDevs = developers.filter(d => d.username.trim() && d.repo.trim());
+    // Now only require username - repo is optional
+    const validDevs = developers.filter(d => d.username.trim());
     if (validDevs.length === 0) {
       return;
     }
@@ -1565,16 +1657,9 @@ export default function GitHubCommitAnalyzer() {
                                 />
                                 <input
                                   type="text"
-                                  placeholder="Repository *"
+                                  placeholder="Repository (optional)"
                                   value={member.repo}
                                   onChange={(e) => updateManualMember(member.id, "repo", e.target.value)}
-                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                />
-                                <input
-                                  type="password"
-                                  placeholder="GitHub Token"
-                                  value={member.token}
-                                  onChange={(e) => updateManualMember(member.id, "token", e.target.value)}
                                   className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                                 />
                                 <button
@@ -1592,7 +1677,7 @@ export default function GitHubCommitAnalyzer() {
                         <div className="mt-4 flex justify-end">
                           <button
                             onClick={applyManualMembersToDevelopers}
-                            disabled={analyzingAll || manualMembers.filter(m => m.owner && m.repo).length === 0}
+                            disabled={analyzingAll || manualMembers.filter(m => m.owner).length === 0}
                             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-medium transition shadow-lg disabled:opacity-60"
                           >
                             {analyzingAll ? (
@@ -1603,7 +1688,7 @@ export default function GitHubCommitAnalyzer() {
                             ) : (
                               <>
                                 <UserCheck size={16} />
-                                Analyze Team ({manualMembers.filter(m => m.owner && m.repo).length} ready)
+                                Analyze Team ({manualMembers.filter(m => m.owner).length} ready)
                               </>
                             )}
                           </button>
@@ -1771,16 +1856,9 @@ export default function GitHubCommitAnalyzer() {
                                     />
                                     <input
                                       type="text"
-                                      placeholder="Repository"
+                                      placeholder="Repository (optional)"
                                       value={memberGitHubMappings[member.accountId]?.repo || ""}
                                       onChange={(e) => updateMemberMapping(member.accountId, "repo", e.target.value)}
-                                      className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                    />
-                                    <input
-                                      type="password"
-                                      placeholder="GitHub Token (optional)"
-                                      value={memberGitHubMappings[member.accountId]?.token || ""}
-                                      onChange={(e) => updateMemberMapping(member.accountId, "token", e.target.value)}
                                       className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                                     />
                                   </div>
@@ -1792,7 +1870,7 @@ export default function GitHubCommitAnalyzer() {
                             <div className="mt-4 flex justify-end">
                               <button
                                 onClick={applyJiraMappingsToDevelopers}
-                                disabled={analyzingAll || teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner && memberGitHubMappings[m.accountId]?.repo).length === 0}
+                                disabled={analyzingAll || teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner).length === 0}
                                 className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-medium transition shadow-lg disabled:opacity-60"
                               >
                                 {analyzingAll ? (
@@ -1803,7 +1881,7 @@ export default function GitHubCommitAnalyzer() {
                                 ) : (
                                   <>
                                     <UserCheck size={16} />
-                                    Analyze Team ({teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner && memberGitHubMappings[m.accountId]?.repo).length} mapped)
+                                    Analyze Team ({teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner).length} mapped)
                                   </>
                                 )}
                               </button>
@@ -1920,7 +1998,7 @@ export default function GitHubCommitAnalyzer() {
                   <div>
                     <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Add Developers to Analyze</h2>
                     <p className="text-sm text-gray-600 dark:text-zinc-300">
-                      Enter owner/repo pairs for each developer. Use the same token for all or individual tokens.
+                      Enter GitHub usernames and optionally specify repositories.
                     </p>
                   </div>
                   <div className="hidden md:flex items-center gap-2">
@@ -1933,11 +2011,34 @@ export default function GitHubCommitAnalyzer() {
                   </div>
                 </div>
 
+                {/* Shared GitHub Token */}
+                <div className="mb-5 p-4 rounded-2xl bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-500/10 dark:to-orange-500/10 border border-amber-200 dark:border-amber-500/30">
+                  <div className="flex items-center gap-3">
+                    <div className="flex-shrink-0 h-10 w-10 rounded-xl bg-amber-500 flex items-center justify-center">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-sm font-medium text-amber-900 dark:text-amber-200 mb-1">
+                        GitHub Token (shared for all developers)
+                      </label>
+                      <input
+                        type="password"
+                        placeholder="ghp_xxxx... (optional but recommended for higher rate limits)"
+                        value={sharedToken}
+                        onChange={(e) => setSharedToken(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl bg-white dark:bg-white/10 border border-amber-300 dark:border-amber-500/30 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-amber-500 text-sm"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 {/* Developer cards */}
                 <div className="space-y-4">
+                  <AnimatePresence mode="popLayout">
                   {developers.map((dev, index) => (
                     <motion.div
                       key={dev.id}
+                      layout
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -10 }}
@@ -1969,32 +2070,25 @@ export default function GitHubCommitAnalyzer() {
                         )}
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                         <input
                           type="text"
-                          placeholder="Owner"
+                          placeholder="GitHub Username"
                           value={dev.username}
                           onChange={(e) => updateDeveloper(dev.id, "username", e.target.value)}
                           className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                         />
                         <input
                           type="text"
-                          placeholder="Repository"
+                          placeholder="Repository (optional)"
                           value={dev.repo}
                           onChange={(e) => updateDeveloper(dev.id, "repo", e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                        />
-                        <input
-                          type="password"
-                          placeholder="GitHub Token (optional)"
-                          value={dev.token}
-                          onChange={(e) => updateDeveloper(dev.id, "token", e.target.value)}
                           className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
                         />
                         <div className="flex gap-2">
                           <button
                             onClick={() => analyzeCommits(dev.id)}
-                            disabled={loadingStates[dev.id] || !dev.username.trim() || !dev.repo.trim()}
+                            disabled={loadingStates[dev.id] || !dev.username.trim()}
                             className="flex-1 px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white text-sm font-medium transition disabled:opacity-50"
                           >
                             {loadingStates[dev.id] ? (
@@ -2053,6 +2147,7 @@ export default function GitHubCommitAnalyzer() {
                       )}
                     </motion.div>
                   ))}
+                  </AnimatePresence>
                 </div>
 
                 {/* Add developer and Analyze All buttons */}
@@ -2068,7 +2163,7 @@ export default function GitHubCommitAnalyzer() {
 
                   <button
                     onClick={analyzeAllDevelopers}
-                    disabled={anyLoading || developers.filter(d => d.username.trim() && d.repo.trim()).length === 0}
+                    disabled={anyLoading || developers.filter(d => d.username.trim()).length === 0}
                     className="relative overflow-hidden flex-1 rounded-2xl px-5 py-3 font-semibold text-white shadow-lg disabled:opacity-60"
                   >
                     <span className="absolute inset-0 bg-gradient-to-r from-blue-600 to-purple-600" />
