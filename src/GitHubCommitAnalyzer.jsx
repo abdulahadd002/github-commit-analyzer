@@ -274,17 +274,14 @@ export default function GitHubCommitAnalyzer() {
   // Jira integration state
   const [showJiraPanel, setShowJiraPanel] = useState(false);
   const [jiraConfig, setJiraConfig] = useState({
-    domain: "", // e.g., "your-company.atlassian.net"
+    domain: "",
     email: "",
     apiToken: "",
   });
-  const [jiraTeams, setJiraTeams] = useState([]);
-  const [selectedTeam, setSelectedTeam] = useState(null); // null = no selection, "all" = all teams, or team object
-  const [teamMembers, setTeamMembers] = useState([]); // Currently displayed members
-  const [teamMembersCache, setTeamMembersCache] = useState({}); // { teamId: members[] } - cache members per team
+  const [jiraUsers, setJiraUsers] = useState([]);
   const [loadingJira, setLoadingJira] = useState(false);
   const [jiraError, setJiraError] = useState("");
-  const [memberGitHubMappings, setMemberGitHubMappings] = useState({}); // { jiraAccountId: { owner, repo } }
+  const [memberGitHubMappings, setMemberGitHubMappings] = useState({});
 
   // Load history and dark mode preference on mount (client-side only)
   useEffect(() => {
@@ -445,7 +442,6 @@ export default function GitHubCommitAnalyzer() {
     });
   };
 
-
   // Clean domain input (remove https:// if present)
   const cleanDomain = (domain) => {
     return domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
@@ -482,7 +478,8 @@ export default function GitHubCommitAnalyzer() {
     return result;
   };
 
-  const fetchJiraTeams = async () => {
+  // Fetch all Jira users only (simplified - no team tiles)
+  const fetchJiraUsers = async () => {
     if (!jiraConfig.domain || !jiraConfig.email || !jiraConfig.apiToken) {
       setJiraError("Please fill in all Jira configuration fields");
       return;
@@ -502,178 +499,45 @@ export default function GitHubCommitAnalyzer() {
         throw new Error("Proxy server not running. Please start it with: npm run server");
       }
 
-      // Try to fetch users who can be assigned to issues (this gives us team members)
+      // Fetch all users
       const usersUrl = `https://${domain}/rest/api/3/users/search?maxResults=50`;
       const usersResult = await jiraProxyFetch(usersUrl);
 
-      if (usersResult.ok && Array.isArray(usersResult.data)) {
-        // Got users directly
-        const users = usersResult.data.filter(u => u.accountType === "atlassian");
-        if (users.length > 0) {
-          setJiraTeams([{
-            id: "all-users",
-            name: "All Jira Users",
-            type: "users",
-            members: users.map(u => ({
-              accountId: u.accountId,
-              displayName: u.displayName,
-              emailAddress: u.emailAddress || "",
-              avatarUrl: u.avatarUrls?.["48x48"] || "",
-              active: u.active,
-            })),
-          }]);
-          return;
+      if (!usersResult.ok) {
+        throw new Error("Failed to fetch Jira users. Please check your credentials.");
+      }
+
+      if (Array.isArray(usersResult.data)) {
+        const users = usersResult.data
+          .filter(u => u.accountType === "atlassian")
+          .map(u => ({
+            accountId: u.accountId,
+            displayName: u.displayName,
+            emailAddress: u.emailAddress || "",
+            avatarUrl: u.avatarUrls?.["48x48"] || "",
+            active: u.active,
+          }));
+
+        if (users.length === 0) {
+          throw new Error("No users found in your Jira workspace.");
         }
-      }
 
-      // Try to fetch groups
-      const groupsUrl = `https://${domain}/rest/api/3/groups/picker?maxResults=50`;
-      const groupsResult = await jiraProxyFetch(groupsUrl);
+        setJiraUsers(users);
 
-      if (groupsResult.ok && groupsResult.data?.groups) {
-        const groups = groupsResult.data.groups || [];
-        if (groups.length > 0) {
-          setJiraTeams(groups.map(g => ({
-            id: g.groupId || g.name,
-            name: g.name,
-            type: "group",
-          })));
-          return;
-        }
-      }
-
-      // Try project roles as fallback
-      const projectsUrl = `https://${domain}/rest/api/3/project/search?maxResults=10`;
-      const projectsResult = await jiraProxyFetch(projectsUrl);
-
-      if (projectsResult.ok && projectsResult.data?.values?.length > 0) {
-        const projects = projectsResult.data.values;
-        setJiraTeams(projects.map(p => ({
-          id: p.id,
-          name: `Project: ${p.name}`,
-          type: "project",
-          key: p.key,
-        })));
-        return;
-      }
-
-      throw new Error("No teams, groups, or projects found. Please check your Jira permissions.");
-    } catch (error) {
-      console.error("Error fetching Jira teams:", error);
-      setJiraError(error.message || "Failed to fetch teams from Jira");
-    } finally {
-      setLoadingJira(false);
-    }
-  };
-
-  const fetchTeamMembers = async (team) => {
-    if (!team) return;
-
-    // If selecting "all", combine all cached team members
-    if (team === "all") {
-      setSelectedTeam("all");
-      const allMembers = [];
-      const seenIds = new Set();
-
-      Object.values(teamMembersCache).forEach(members => {
-        members.forEach(m => {
-          if (!seenIds.has(m.accountId)) {
-            seenIds.add(m.accountId);
-            allMembers.push(m);
+        // Initialize mappings for new members
+        const newMappings = { ...memberGitHubMappings };
+        users.forEach(m => {
+          if (!newMappings[m.accountId]) {
+            newMappings[m.accountId] = { owner: "", repo: "" };
           }
         });
-      });
-
-      setTeamMembers(allMembers);
-      return;
-    }
-
-    // Check if we already have cached members for this team
-    if (teamMembersCache[team.id]) {
-      setSelectedTeam(team);
-      setTeamMembers(teamMembersCache[team.id]);
-      return;
-    }
-
-    setLoadingJira(true);
-    setJiraError("");
-    setSelectedTeam(team);
-
-    try {
-      let members = [];
-      const domain = cleanDomain(jiraConfig.domain);
-
-      if (team.type === "users" && team.members) {
-        // Already have members from the users search
-        members = team.members;
-      } else if (team.type === "group") {
-        // Fetch group members via proxy
-        const membersUrl = `https://${domain}/rest/api/3/group/member?groupname=${encodeURIComponent(team.name)}&maxResults=50`;
-        const result = await jiraProxyFetch(membersUrl);
-
-        if (!result.ok) {
-          throw new Error(`Failed to fetch group members: ${result.status}`);
-        }
-
-        const data = result.data;
-        members = (data.values || []).map(m => ({
-          accountId: m.accountId,
-          displayName: m.displayName,
-          emailAddress: m.emailAddress || "",
-          avatarUrl: m.avatarUrls?.["48x48"] || "",
-          active: m.active,
-        }));
-      } else if (team.type === "project") {
-        // Fetch project members via assignable users
-        const membersUrl = `https://${domain}/rest/api/3/user/assignable/search?project=${team.key}&maxResults=50`;
-        const result = await jiraProxyFetch(membersUrl);
-
-        if (!result.ok) {
-          throw new Error(`Failed to fetch project members: ${result.status}`);
-        }
-
-        const data = Array.isArray(result.data) ? result.data : [];
-        members = data.filter(u => u.accountType === "atlassian").map(m => ({
-          accountId: m.accountId,
-          displayName: m.displayName,
-          emailAddress: m.emailAddress || "",
-          avatarUrl: m.avatarUrls?.["48x48"] || "",
-          active: m.active,
-        }));
+        setMemberGitHubMappings(newMappings);
       } else {
-        // Fetch team members using Team API via proxy
-        const membersUrl = `https://${domain}/rest/teams/1.0/teams/${team.id}/members`;
-        const result = await jiraProxyFetch(membersUrl);
-
-        if (!result.ok) {
-          throw new Error(`Failed to fetch team members: ${result.status}`);
-        }
-
-        const data = result.data;
-        members = (data.members || data || []).map(m => ({
-          accountId: m.accountId || m.id,
-          displayName: m.displayName || m.name,
-          emailAddress: m.emailAddress || "",
-          avatarUrl: m.avatarUrl || m.avatarUrls?.["48x48"] || "",
-          active: true,
-        }));
+        throw new Error("Unexpected response format from Jira API.");
       }
-
-      // Cache the members for this team
-      setTeamMembersCache(prev => ({ ...prev, [team.id]: members }));
-      setTeamMembers(members);
-
-      // Initialize mappings for new members
-      const newMappings = { ...memberGitHubMappings };
-      members.forEach(m => {
-        if (!newMappings[m.accountId]) {
-          newMappings[m.accountId] = { owner: "", repo: "" };
-        }
-      });
-      setMemberGitHubMappings(newMappings);
     } catch (error) {
-      console.error("Error fetching team members:", error);
-      setJiraError(error.message || "Failed to fetch team members");
+      console.error("Error fetching Jira users:", error);
+      setJiraError(error.message || "Failed to fetch users from Jira");
     } finally {
       setLoadingJira(false);
     }
@@ -691,7 +555,7 @@ export default function GitHubCommitAnalyzer() {
 
   const applyJiraMappingsToDevelopers = async () => {
     // Filter members with valid GitHub mappings - only owner is required now
-    const validMappings = teamMembers
+    const validMappings = jiraUsers
       .filter(m => {
         const mapping = memberGitHubMappings[m.accountId];
         return mapping && mapping.owner.trim();
@@ -1530,10 +1394,10 @@ export default function GitHubCommitAnalyzer() {
                       ? "bg-blue-600 border-blue-600 text-white"
                       : "bg-white/70 dark:bg-white/10 border-black/10 dark:border-white/10 hover:bg-white dark:hover:bg-white/20"
                   }`}
-                  title="Import from Jira Team"
+                  title="Import from Jira"
                 >
                   <Building2 size={18} className={showJiraPanel ? "text-white" : "text-blue-600 dark:text-blue-400"} />
-                  <span className="hidden sm:inline text-sm">{showJiraPanel ? "Close Jira" : "Jira Team"}</span>
+                  <span className="hidden sm:inline text-sm">{showJiraPanel ? "Close Jira" : "Jira"}</span>
                 </button>
 
                 <button
@@ -1557,7 +1421,7 @@ export default function GitHubCommitAnalyzer() {
               </div>
             </div>
 
-            {/* Jira Integration Panel */}
+            {/* Jira Integration Panel (Simplified - Users Only) */}
             <AnimatePresence>
               {showJiraPanel && (
                 <motion.div
@@ -1573,13 +1437,12 @@ export default function GitHubCommitAnalyzer() {
                           <Building2 size={20} className="text-white" />
                         </div>
                         <div>
-                          <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Team Integration</h2>
+                          <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Jira Integration</h2>
                           <p className="text-sm text-gray-600 dark:text-zinc-300">
-                            Add team members and map them to GitHub repositories
+                            Import users and map them to GitHub repositories
                           </p>
                         </div>
                       </div>
-
                     </div>
 
                     {/* Jira Error */}
@@ -1633,7 +1496,7 @@ export default function GitHubCommitAnalyzer() {
 
                     <div className="flex items-center gap-3 mb-5">
                       <button
-                        onClick={fetchJiraTeams}
+                        onClick={fetchJiraUsers}
                         disabled={loadingJira || !jiraConfig.domain || !jiraConfig.email || !jiraConfig.apiToken}
                         className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white text-sm font-medium transition disabled:opacity-50"
                       >
@@ -1645,7 +1508,7 @@ export default function GitHubCommitAnalyzer() {
                         ) : (
                           <>
                             <Link2 size={16} />
-                            Fetch Teams
+                            Fetch Users
                           </>
                         )}
                       </button>
@@ -1659,68 +1522,13 @@ export default function GitHubCommitAnalyzer() {
                       </a>
                     </div>
 
-                    {/* Teams List */}
-                    {jiraTeams.length > 0 && (
-                      <div className="mb-5">
-                        <div className="flex items-center justify-between mb-2">
-                          <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300">
-                            Select a Team/Group
-                          </label>
-                          {Object.keys(teamMembersCache).length > 1 && (
-                            <span className="text-xs text-gray-500 dark:text-zinc-400">
-                              {Object.keys(teamMembersCache).length} teams loaded
-                            </span>
-                          )}
-                        </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                          {/* View All Teams button - shown when multiple teams are cached */}
-                          {Object.keys(teamMembersCache).length > 1 && (
-                            <button
-                              onClick={() => fetchTeamMembers("all")}
-                              className={`px-4 py-2 rounded-xl text-sm font-medium transition ${
-                                selectedTeam === "all"
-                                  ? "bg-gradient-to-r from-purple-600 to-blue-600 text-white"
-                                  : "bg-gradient-to-r from-purple-100 to-blue-100 dark:from-purple-500/20 dark:to-blue-500/20 border border-purple-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-300 hover:from-purple-200 hover:to-blue-200 dark:hover:from-purple-500/30 dark:hover:to-blue-500/30"
-                              }`}
-                            >
-                              <span className="flex items-center gap-2">
-                                <Users size={14} />
-                                All Teams
-                              </span>
-                            </button>
-                          )}
-                          {jiraTeams.map((team) => (
-                            <button
-                              key={team.id}
-                              onClick={() => fetchTeamMembers(team)}
-                              className={`px-4 py-2 rounded-xl text-sm font-medium transition ${
-                                selectedTeam?.id === team.id
-                                  ? "bg-blue-600 text-white"
-                                  : teamMembersCache[team.id]
-                                    ? "bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 text-green-700 dark:text-green-300 hover:bg-green-100 dark:hover:bg-green-500/20"
-                                    : "bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-700 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-white/10"
-                              }`}
-                            >
-                              <span className="flex items-center gap-2">
-                                <Users size={14} />
-                                {team.name}
-                                {teamMembersCache[team.id] && (
-                                  <span className="text-xs opacity-70">({teamMembersCache[team.id].length})</span>
-                                )}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Team Members with GitHub Mapping */}
-                    {teamMembers.length > 0 && (
+                    {/* Users List with GitHub Mapping */}
+                    {jiraUsers.length > 0 && (
                       <div>
                         <div className="flex items-center justify-between mb-3">
                           <div>
                             <label className="block text-sm font-medium text-gray-700 dark:text-zinc-300">
-                              {selectedTeam === "all" ? "All Teams" : selectedTeam?.name || "Team"} Members ({teamMembers.length})
+                              Jira Users ({jiraUsers.length})
                             </label>
                             <p className="text-xs text-gray-500 dark:text-zinc-400">
                               Map to GitHub repositories for analysis
@@ -1731,7 +1539,7 @@ export default function GitHubCommitAnalyzer() {
                           </span>
                         </div>
                         <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
-                          {teamMembers.map((member) => (
+                          {jiraUsers.map((member) => (
                             <div
                               key={member.accountId}
                               className="flex items-center gap-4 p-3 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10"
@@ -1762,7 +1570,7 @@ export default function GitHubCommitAnalyzer() {
                               </div>
 
                               {/* GitHub Mapping Inputs */}
-                              <div className="flex-1 grid grid-cols-3 gap-2">
+                              <div className="flex-1 grid grid-cols-2 gap-2">
                                 <input
                                   type="text"
                                   placeholder="GitHub Owner"
@@ -1786,7 +1594,7 @@ export default function GitHubCommitAnalyzer() {
                         <div className="mt-4 flex justify-end">
                           <button
                             onClick={applyJiraMappingsToDevelopers}
-                            disabled={analyzingAll || teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner).length === 0}
+                            disabled={analyzingAll || jiraUsers.filter(m => memberGitHubMappings[m.accountId]?.owner).length === 0}
                             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-medium transition shadow-lg disabled:opacity-60"
                           >
                             {analyzingAll ? (
@@ -1797,7 +1605,7 @@ export default function GitHubCommitAnalyzer() {
                             ) : (
                               <>
                                 <UserCheck size={16} />
-                                Analyze Team ({teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner).length} mapped)
+                                Analyze ({jiraUsers.filter(m => memberGitHubMappings[m.accountId]?.owner).length} mapped)
                               </>
                             )}
                           </button>
