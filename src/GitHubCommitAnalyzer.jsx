@@ -440,11 +440,6 @@ export default function GitHubCommitAnalyzer() {
     });
   };
 
-  // Jira integration - Manual team entry mode (CORS prevents direct API calls from browser)
-  const [manualTeamMode, setManualTeamMode] = useState(true);
-  const [manualMembers, setManualMembers] = useState([
-    { id: generateId(), name: "", email: "", owner: "", repo: "" }
-  ]);
 
   // Clean domain input (remove https:// if present)
   const cleanDomain = (domain) => {
@@ -564,48 +559,6 @@ export default function GitHubCommitAnalyzer() {
     } finally {
       setLoadingJira(false);
     }
-  };
-
-  // Manual team member functions
-  const addManualMember = () => {
-    if (manualMembers.length >= MAX_DEVELOPERS) return;
-    setManualMembers(prev => [...prev, { id: generateId(), name: "", email: "", owner: "", repo: "" }]);
-  };
-
-  const removeManualMember = (id) => {
-    if (manualMembers.length <= 1) return;
-    setManualMembers(prev => prev.filter(m => m.id !== id));
-  };
-
-  const updateManualMember = (id, field, value) => {
-    setManualMembers(prev => prev.map(m => m.id === id ? { ...m, [field]: value } : m));
-  };
-
-  const applyManualMembersToDevelopers = async () => {
-    // Only owner is required now - repo is optional
-    const validMembers = manualMembers.filter(m => m.owner.trim());
-    if (validMembers.length === 0) {
-      setJiraError("Please enter at least one member with a GitHub owner");
-      return;
-    }
-
-    const newDevelopers = validMembers.map(m => ({
-      id: generateId(),
-      username: m.owner.trim(),
-      repo: m.repo ? m.repo.trim() : "",
-      jiraMember: m.name ? { displayName: m.name, emailAddress: m.email } : null,
-    }));
-
-    setDevelopers(newDevelopers);
-    setShowJiraPanel(false);
-
-    // Automatically analyze all developers after applying mappings
-    setAnalyzingAll(true);
-
-    // Run analysis for each new developer (pass dev object directly since state hasn't updated yet)
-    await Promise.all(newDevelopers.map(dev => analyzeCommits(dev.id, dev)));
-
-    setAnalyzingAll(false);
   };
 
   const fetchTeamMembers = async (team) => {
@@ -1580,29 +1533,6 @@ export default function GitHubCommitAnalyzer() {
                         </div>
                       </div>
 
-                      {/* Mode Toggle */}
-                      <div className="flex items-center gap-2 bg-white/50 dark:bg-white/5 rounded-xl p-1">
-                        <button
-                          onClick={() => setManualTeamMode(true)}
-                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
-                            manualTeamMode
-                              ? "bg-blue-600 text-white"
-                              : "text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-zinc-200"
-                          }`}
-                        >
-                          Manual Entry
-                        </button>
-                        <button
-                          onClick={() => setManualTeamMode(false)}
-                          className={`px-3 py-1.5 rounded-lg text-sm font-medium transition ${
-                            !manualTeamMode
-                              ? "bg-blue-600 text-white"
-                              : "text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-zinc-200"
-                          }`}
-                        >
-                          Jira API
-                        </button>
-                      </div>
                     </div>
 
                     {/* Jira Error */}
@@ -1613,179 +1543,85 @@ export default function GitHubCommitAnalyzer() {
                       </div>
                     )}
 
-                    {/* Manual Entry Mode */}
-                    {manualTeamMode && (
+                    {/* Jira Configuration */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
                       <div>
-                        <div className="flex items-center justify-between mb-3">
-                          <label className="block text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            Team Members ({manualMembers.length}/{MAX_DEVELOPERS})
-                          </label>
-                          <button
-                            onClick={addManualMember}
-                            disabled={manualMembers.length >= MAX_DEVELOPERS}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-blue-100 hover:bg-blue-200 dark:bg-blue-500/20 dark:hover:bg-blue-500/30 text-blue-700 dark:text-blue-300 text-sm font-medium transition disabled:opacity-50"
-                          >
-                            <Plus size={14} />
-                            Add Member
-                          </button>
-                        </div>
-
-                        <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
-                          {manualMembers.map((member, index) => (
-                            <div
-                              key={member.id}
-                              className="flex items-center gap-3 p-3 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10"
-                            >
-                              <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center text-sm font-semibold text-blue-600 dark:text-blue-400">
-                                {index + 1}
-                              </div>
-
-                              <div className="flex-1 grid grid-cols-2 md:grid-cols-5 gap-2">
-                                <input
-                                  type="text"
-                                  placeholder="Name (optional)"
-                                  value={member.name}
-                                  onChange={(e) => updateManualMember(member.id, "name", e.target.value)}
-                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                />
-                                <input
-                                  type="text"
-                                  placeholder="GitHub Owner *"
-                                  value={member.owner}
-                                  onChange={(e) => updateManualMember(member.id, "owner", e.target.value)}
-                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                />
-                                <input
-                                  type="text"
-                                  placeholder="Repository (optional)"
-                                  value={member.repo}
-                                  onChange={(e) => updateManualMember(member.id, "repo", e.target.value)}
-                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                />
-                                <button
-                                  onClick={() => removeManualMember(member.id)}
-                                  disabled={manualMembers.length <= 1}
-                                  className="px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 dark:bg-red-500/10 dark:hover:bg-red-500/20 text-red-600 dark:text-red-400 transition disabled:opacity-30"
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-
-                        <div className="mt-4 flex justify-end">
-                          <button
-                            onClick={applyManualMembersToDevelopers}
-                            disabled={analyzingAll || manualMembers.filter(m => m.owner).length === 0}
-                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-medium transition shadow-lg disabled:opacity-60"
-                          >
-                            {analyzingAll ? (
-                              <>
-                                <RefreshCw size={16} className="animate-spin" />
-                                Analyzing...
-                              </>
-                            ) : (
-                              <>
-                                <UserCheck size={16} />
-                                Analyze Team ({manualMembers.filter(m => m.owner).length} ready)
-                              </>
-                            )}
-                          </button>
-                        </div>
+                        <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-1">
+                          Jira Domain
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="your-company.atlassian.net"
+                          value={jiraConfig.domain}
+                          onChange={(e) => setJiraConfig({ ...jiraConfig, domain: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                        />
+                        <p className="text-xs text-gray-500 dark:text-zinc-500 mt-1">Without https://</p>
                       </div>
-                    )}
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-1">
+                          Email
+                        </label>
+                        <input
+                          type="email"
+                          placeholder="your-email@company.com"
+                          value={jiraConfig.email}
+                          onChange={(e) => setJiraConfig({ ...jiraConfig, email: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-1">
+                          API Token
+                        </label>
+                        <input
+                          type="password"
+                          placeholder="Jira API Token"
+                          value={jiraConfig.apiToken}
+                          onChange={(e) => setJiraConfig({ ...jiraConfig, apiToken: e.target.value })}
+                          className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                        />
+                      </div>
+                    </div>
 
-                    {/* Jira API Mode */}
-                    {!manualTeamMode && (
-                      <>
-                        {/* CORS Warning */}
-                        <div className="mb-5 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 p-3">
-                          <p className="text-sm text-amber-800 dark:text-amber-200">
-                            <strong>Note:</strong> Due to browser security (CORS), direct Jira API calls may fail.
-                            If you encounter errors, please use the <strong>Manual Entry</strong> mode instead.
-                          </p>
-                        </div>
+                    <div className="flex items-center gap-3 mb-5">
+                      <button
+                        onClick={fetchJiraTeams}
+                        disabled={loadingJira || !jiraConfig.domain || !jiraConfig.email || !jiraConfig.apiToken}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white text-sm font-medium transition disabled:opacity-50"
+                      >
+                        {loadingJira ? (
+                          <>
+                            <RefreshCw size={16} className="animate-spin" />
+                            Connecting...
+                          </>
+                        ) : (
+                          <>
+                            <Link2 size={16} />
+                            Fetch Teams
+                          </>
+                        )}
+                      </button>
+                      <a
+                        href="https://id.atlassian.com/manage-profile/security/api-tokens"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        Get API Token →
+                      </a>
+                    </div>
 
-                        {/* Jira Configuration */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
-                          <div>
-                            <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-1">
-                              Jira Domain
-                            </label>
-                            <input
-                              type="text"
-                              placeholder="your-company.atlassian.net"
-                              value={jiraConfig.domain}
-                              onChange={(e) => setJiraConfig({ ...jiraConfig, domain: e.target.value })}
-                              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                            />
-                            <p className="text-xs text-gray-500 dark:text-zinc-500 mt-1">Without https://</p>
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-1">
-                              Email
-                            </label>
-                            <input
-                              type="email"
-                              placeholder="your-email@company.com"
-                              value={jiraConfig.email}
-                              onChange={(e) => setJiraConfig({ ...jiraConfig, email: e.target.value })}
-                              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-1">
-                              API Token
-                            </label>
-                            <input
-                              type="password"
-                              placeholder="Jira API Token"
-                              value={jiraConfig.apiToken}
-                              onChange={(e) => setJiraConfig({ ...jiraConfig, apiToken: e.target.value })}
-                              className="w-full px-3 py-2 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200/80 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-3 mb-5">
-                          <button
-                            onClick={fetchJiraTeams}
-                            disabled={loadingJira || !jiraConfig.domain || !jiraConfig.email || !jiraConfig.apiToken}
-                            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white text-sm font-medium transition disabled:opacity-50"
-                          >
-                            {loadingJira ? (
-                              <>
-                                <RefreshCw size={16} className="animate-spin" />
-                                Connecting...
-                              </>
-                            ) : (
-                              <>
-                                <Link2 size={16} />
-                                Fetch Teams
-                              </>
-                            )}
-                          </button>
-                          <a
-                            href="https://id.atlassian.com/manage-profile/security/api-tokens"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
-                          >
-                            Get API Token →
-                          </a>
-                        </div>
-
-                        {/* Teams List */}
-                        {jiraTeams.length > 0 && (
-                          <div className="mb-5">
-                            <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-2">
-                              Select a Team/Group
-                            </label>
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                              {jiraTeams.map((team) => (
-                                <button
-                                  key={team.id}
+                    {/* Teams List */}
+                    {jiraTeams.length > 0 && (
+                      <div className="mb-5">
+                        <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-2">
+                          Select a Team/Group
+                        </label>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          {jiraTeams.map((team) => (
+                            <button
+                              key={team.id}
                               onClick={() => fetchTeamMembers(team)}
                               className={`px-4 py-2 rounded-xl text-sm font-medium transition ${
                                 selectedTeam?.id === team.id
@@ -1798,97 +1634,95 @@ export default function GitHubCommitAnalyzer() {
                                 {team.name}
                               </span>
                             </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
-                        {/* Team Members with GitHub Mapping */}
-                        {teamMembers.length > 0 && (
-                          <div>
-                            <div className="flex items-center justify-between mb-3">
-                              <label className="block text-sm font-medium text-gray-700 dark:text-zinc-300">
-                                Team Members - Map to GitHub Repositories ({teamMembers.length} members)
-                              </label>
-                              <span className="text-xs text-gray-500 dark:text-zinc-400">
-                                Max {MAX_DEVELOPERS} will be analyzed
-                              </span>
-                            </div>
-                            <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
-                              {teamMembers.map((member) => (
-                                <div
-                                  key={member.accountId}
-                                  className="flex items-center gap-4 p-3 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10"
-                                >
-                                  {/* Member Info */}
-                                  <div className="flex items-center gap-3 min-w-[200px]">
-                                    {member.avatarUrl ? (
-                                      <img
-                                        src={member.avatarUrl}
-                                        alt={member.displayName}
-                                        className="w-8 h-8 rounded-full"
-                                      />
-                                    ) : (
-                                      <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center">
-                                        <UserCheck size={16} className="text-blue-600 dark:text-blue-400" />
-                                      </div>
-                                    )}
-                                    <div>
-                                      <p className="text-sm font-medium text-gray-900 dark:text-zinc-100">
-                                        {member.displayName}
-                                      </p>
-                                      {member.emailAddress && (
-                                        <p className="text-xs text-gray-500 dark:text-zinc-400">
-                                          {member.emailAddress}
-                                        </p>
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  {/* GitHub Mapping Inputs */}
-                                  <div className="flex-1 grid grid-cols-3 gap-2">
-                                    <input
-                                      type="text"
-                                      placeholder="GitHub Owner"
-                                      value={memberGitHubMappings[member.accountId]?.owner || ""}
-                                      onChange={(e) => updateMemberMapping(member.accountId, "owner", e.target.value)}
-                                      className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                    />
-                                    <input
-                                      type="text"
-                                      placeholder="Repository (optional)"
-                                      value={memberGitHubMappings[member.accountId]?.repo || ""}
-                                      onChange={(e) => updateMemberMapping(member.accountId, "repo", e.target.value)}
-                                      className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-                                    />
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-
-                            {/* Apply & Analyze Button */}
-                            <div className="mt-4 flex justify-end">
-                              <button
-                                onClick={applyJiraMappingsToDevelopers}
-                                disabled={analyzingAll || teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner).length === 0}
-                                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-medium transition shadow-lg disabled:opacity-60"
-                              >
-                                {analyzingAll ? (
-                                  <>
-                                    <RefreshCw size={16} className="animate-spin" />
-                                    Analyzing...
-                                  </>
+                    {/* Team Members with GitHub Mapping */}
+                    {teamMembers.length > 0 && (
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <label className="block text-sm font-medium text-gray-700 dark:text-zinc-300">
+                            Team Members - Map to GitHub Repositories ({teamMembers.length} members)
+                          </label>
+                          <span className="text-xs text-gray-500 dark:text-zinc-400">
+                            Max {MAX_DEVELOPERS} will be analyzed
+                          </span>
+                        </div>
+                        <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
+                          {teamMembers.map((member) => (
+                            <div
+                              key={member.accountId}
+                              className="flex items-center gap-4 p-3 rounded-xl bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10"
+                            >
+                              {/* Member Info */}
+                              <div className="flex items-center gap-3 min-w-[200px]">
+                                {member.avatarUrl ? (
+                                  <img
+                                    src={member.avatarUrl}
+                                    alt={member.displayName}
+                                    className="w-8 h-8 rounded-full"
+                                  />
                                 ) : (
-                                  <>
-                                    <UserCheck size={16} />
-                                    Analyze Team ({teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner).length} mapped)
-                                  </>
+                                  <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-500/20 flex items-center justify-center">
+                                    <UserCheck size={16} className="text-blue-600 dark:text-blue-400" />
+                                  </div>
                                 )}
-                              </button>
+                                <div>
+                                  <p className="text-sm font-medium text-gray-900 dark:text-zinc-100">
+                                    {member.displayName}
+                                  </p>
+                                  {member.emailAddress && (
+                                    <p className="text-xs text-gray-500 dark:text-zinc-400">
+                                      {member.emailAddress}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* GitHub Mapping Inputs */}
+                              <div className="flex-1 grid grid-cols-3 gap-2">
+                                <input
+                                  type="text"
+                                  placeholder="GitHub Owner"
+                                  value={memberGitHubMappings[member.accountId]?.owner || ""}
+                                  onChange={(e) => updateMemberMapping(member.accountId, "owner", e.target.value)}
+                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                />
+                                <input
+                                  type="text"
+                                  placeholder="Repository (optional)"
+                                  value={memberGitHubMappings[member.accountId]?.repo || ""}
+                                  onChange={(e) => updateMemberMapping(member.accountId, "repo", e.target.value)}
+                                  className="px-3 py-1.5 rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                                />
+                              </div>
                             </div>
-                          </div>
-                        )}
-                      </>
+                          ))}
+                        </div>
+
+                        {/* Apply & Analyze Button */}
+                        <div className="mt-4 flex justify-end">
+                          <button
+                            onClick={applyJiraMappingsToDevelopers}
+                            disabled={analyzingAll || teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner).length === 0}
+                            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white text-sm font-medium transition shadow-lg disabled:opacity-60"
+                          >
+                            {analyzingAll ? (
+                              <>
+                                <RefreshCw size={16} className="animate-spin" />
+                                Analyzing...
+                              </>
+                            ) : (
+                              <>
+                                <UserCheck size={16} />
+                                Analyze Team ({teamMembers.filter(m => memberGitHubMappings[m.accountId]?.owner).length} mapped)
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
                     )}
                   </div>
                 </motion.div>

@@ -3,7 +3,8 @@
     "allow": [
       "Bash(tree:*)",
       "Bash(npx eslint:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(node -e:*)"
     ]
   }
 }
