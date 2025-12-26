@@ -38,6 +38,7 @@ import {
   UserCheck,
   Building2,
   AlertCircle,
+  UserPlus,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import html2canvas from "html2canvas";
@@ -267,6 +268,9 @@ export default function GitHubCommitAnalyzer() {
   const reportRef = useRef(null);
   const singleReportRefs = useRef({}); // { [devId]: ref }
 
+  // Developer panel state
+  const [showDeveloperPanel, setShowDeveloperPanel] = useState(true);
+
   // Jira integration state
   const [showJiraPanel, setShowJiraPanel] = useState(false);
   const [jiraConfig, setJiraConfig] = useState({
@@ -275,11 +279,12 @@ export default function GitHubCommitAnalyzer() {
     apiToken: "",
   });
   const [jiraTeams, setJiraTeams] = useState([]);
-  const [selectedTeam, setSelectedTeam] = useState(null);
-  const [teamMembers, setTeamMembers] = useState([]);
+  const [selectedTeam, setSelectedTeam] = useState(null); // null = no selection, "all" = all teams, or team object
+  const [teamMembers, setTeamMembers] = useState([]); // Currently displayed members
+  const [teamMembersCache, setTeamMembersCache] = useState({}); // { teamId: members[] } - cache members per team
   const [loadingJira, setLoadingJira] = useState(false);
   const [jiraError, setJiraError] = useState("");
-  const [memberGitHubMappings, setMemberGitHubMappings] = useState({}); // { jiraAccountId: { owner, repo, token } }
+  const [memberGitHubMappings, setMemberGitHubMappings] = useState({}); // { jiraAccountId: { owner, repo } }
 
   // Load history and dark mode preference on mount (client-side only)
   useEffect(() => {
@@ -564,6 +569,32 @@ export default function GitHubCommitAnalyzer() {
   const fetchTeamMembers = async (team) => {
     if (!team) return;
 
+    // If selecting "all", combine all cached team members
+    if (team === "all") {
+      setSelectedTeam("all");
+      const allMembers = [];
+      const seenIds = new Set();
+
+      Object.values(teamMembersCache).forEach(members => {
+        members.forEach(m => {
+          if (!seenIds.has(m.accountId)) {
+            seenIds.add(m.accountId);
+            allMembers.push(m);
+          }
+        });
+      });
+
+      setTeamMembers(allMembers);
+      return;
+    }
+
+    // Check if we already have cached members for this team
+    if (teamMembersCache[team.id]) {
+      setSelectedTeam(team);
+      setTeamMembers(teamMembersCache[team.id]);
+      return;
+    }
+
     setLoadingJira(true);
     setJiraError("");
     setSelectedTeam(team);
@@ -628,6 +659,8 @@ export default function GitHubCommitAnalyzer() {
         }));
       }
 
+      // Cache the members for this team
+      setTeamMembersCache(prev => ({ ...prev, [team.id]: members }));
       setTeamMembers(members);
 
       // Initialize mappings for new members
@@ -1477,6 +1510,20 @@ export default function GitHubCommitAnalyzer() {
 
                 <button
                   type="button"
+                  onClick={() => setShowDeveloperPanel(!showDeveloperPanel)}
+                  className={`group inline-flex items-center gap-2 px-3 py-2 rounded-2xl border shadow-sm hover:shadow-md transition-all cursor-pointer ${
+                    showDeveloperPanel
+                      ? "bg-blue-600 border-blue-600 text-white"
+                      : "bg-white/70 dark:bg-white/10 border-black/10 dark:border-white/10 hover:bg-white dark:hover:bg-white/20"
+                  }`}
+                  title="Add Developers"
+                >
+                  <UserPlus size={18} className={showDeveloperPanel ? "text-white" : "text-blue-600 dark:text-blue-400"} />
+                  <span className="hidden sm:inline text-sm">{showDeveloperPanel ? "Hide" : "Add Devs"}</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => setShowJiraPanel(!showJiraPanel)}
                   className={`group inline-flex items-center gap-2 px-3 py-2 rounded-2xl border shadow-sm hover:shadow-md transition-all cursor-pointer ${
                     showJiraPanel
@@ -1615,10 +1662,33 @@ export default function GitHubCommitAnalyzer() {
                     {/* Teams List */}
                     {jiraTeams.length > 0 && (
                       <div className="mb-5">
-                        <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300 mb-2">
-                          Select a Team/Group
-                        </label>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="block text-xs font-medium text-gray-700 dark:text-zinc-300">
+                            Select a Team/Group
+                          </label>
+                          {Object.keys(teamMembersCache).length > 1 && (
+                            <span className="text-xs text-gray-500 dark:text-zinc-400">
+                              {Object.keys(teamMembersCache).length} teams loaded
+                            </span>
+                          )}
+                        </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          {/* View All Teams button - shown when multiple teams are cached */}
+                          {Object.keys(teamMembersCache).length > 1 && (
+                            <button
+                              onClick={() => fetchTeamMembers("all")}
+                              className={`px-4 py-2 rounded-xl text-sm font-medium transition ${
+                                selectedTeam === "all"
+                                  ? "bg-gradient-to-r from-purple-600 to-blue-600 text-white"
+                                  : "bg-gradient-to-r from-purple-100 to-blue-100 dark:from-purple-500/20 dark:to-blue-500/20 border border-purple-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-300 hover:from-purple-200 hover:to-blue-200 dark:hover:from-purple-500/30 dark:hover:to-blue-500/30"
+                              }`}
+                            >
+                              <span className="flex items-center gap-2">
+                                <Users size={14} />
+                                All Teams
+                              </span>
+                            </button>
+                          )}
                           {jiraTeams.map((team) => (
                             <button
                               key={team.id}
@@ -1626,12 +1696,17 @@ export default function GitHubCommitAnalyzer() {
                               className={`px-4 py-2 rounded-xl text-sm font-medium transition ${
                                 selectedTeam?.id === team.id
                                   ? "bg-blue-600 text-white"
-                                  : "bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-700 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-white/10"
+                                  : teamMembersCache[team.id]
+                                    ? "bg-green-50 dark:bg-green-500/10 border border-green-200 dark:border-green-500/30 text-green-700 dark:text-green-300 hover:bg-green-100 dark:hover:bg-green-500/20"
+                                    : "bg-white/80 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-700 dark:text-zinc-300 hover:bg-gray-50 dark:hover:bg-white/10"
                               }`}
                             >
                               <span className="flex items-center gap-2">
                                 <Users size={14} />
                                 {team.name}
+                                {teamMembersCache[team.id] && (
+                                  <span className="text-xs opacity-70">({teamMembersCache[team.id].length})</span>
+                                )}
                               </span>
                             </button>
                           ))}
@@ -1643,9 +1718,14 @@ export default function GitHubCommitAnalyzer() {
                     {teamMembers.length > 0 && (
                       <div>
                         <div className="flex items-center justify-between mb-3">
-                          <label className="block text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            Team Members - Map to GitHub Repositories ({teamMembers.length} members)
-                          </label>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-zinc-300">
+                              {selectedTeam === "all" ? "All Teams" : selectedTeam?.name || "Team"} Members ({teamMembers.length})
+                            </label>
+                            <p className="text-xs text-gray-500 dark:text-zinc-400">
+                              Map to GitHub repositories for analysis
+                            </p>
+                          </div>
                           <span className="text-xs text-gray-500 dark:text-zinc-400">
                             Max {MAX_DEVELOPERS} will be analyzed
                           </span>
@@ -1822,12 +1902,16 @@ export default function GitHubCommitAnalyzer() {
             </AnimatePresence>
 
             {/* Developer Input Cards */}
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-xl"
-            >
-              <div className="p-6 md:p-7">
+            <AnimatePresence>
+              {showDeveloperPanel && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="mb-6 overflow-hidden"
+                >
+                  <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-xl">
+                    <div className="p-6 md:p-7">
                 <div className="flex items-start justify-between gap-4 mb-5">
                   <div>
                     <h2 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">Add Developers to Analyze</h2>
@@ -2025,9 +2109,12 @@ export default function GitHubCommitAnalyzer() {
                       <X size={18} /> Stop All
                     </button>
                   )}
-                </div>
-              </div>
-            </motion.div>
+                    </div>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Export buttons - shown when there are results */}
             {hasResults && (
