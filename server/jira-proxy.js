@@ -3,7 +3,7 @@ import cors from 'cors';
 import fetch from 'node-fetch';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;
 
 // Enable CORS for all origins (adjust for production)
 app.use(cors());
@@ -31,17 +31,26 @@ app.post('/api/jira/proxy', async (req, res) => {
       fetchOptions.body = JSON.stringify(body);
     }
 
+    console.log(`Proxying request to: ${url}`);
     const response = await fetch(url, fetchOptions);
     const contentType = response.headers.get('content-type');
 
     let data;
-    if (contentType && contentType.includes('application/json')) {
-      data = await response.json();
+    const text = await response.text();
+
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = text;
+      }
     } else {
-      data = await response.text();
+      data = null;
     }
 
-    res.status(response.status).json({
+    console.log(`Response status: ${response.status}, ok: ${response.ok}`);
+
+    res.json({
       ok: response.ok,
       status: response.status,
       data,
@@ -53,6 +62,11 @@ app.post('/api/jira/proxy', async (req, res) => {
       error: error.message || 'Failed to fetch from Jira API',
     });
   }
+});
+
+// Root route
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'Jira proxy server is running on port ' + PORT });
 });
 
 // Health check endpoint

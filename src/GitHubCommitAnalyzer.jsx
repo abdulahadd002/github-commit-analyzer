@@ -86,6 +86,155 @@ function safeExt(filename) {
   return (ext || "(no-ext)").toLowerCase();
 }
 
+// Expertise detection based on file extensions, config files, and patterns
+const EXPERTISE_PATTERNS = {
+  "Mobile Development": {
+    extensions: ["swift", "kt", "java", "dart", "m", "h", "xib", "storyboard"],
+    configFiles: ["pubspec.yaml", "build.gradle", "Podfile", "AndroidManifest.xml", "Info.plist", "app.json"],
+    pathPatterns: ["ios/", "android/", "lib/", "flutter/"],
+    icon: "📱",
+    color: "purple"
+  },
+  "Frontend Development": {
+    extensions: ["jsx", "tsx", "vue", "svelte", "html", "css", "scss", "sass", "less"],
+    configFiles: ["package.json", "vite.config", "webpack.config", "next.config", "nuxt.config", "tailwind.config", ".babelrc", "tsconfig.json"],
+    pathPatterns: ["src/components/", "src/pages/", "public/", "styles/", "assets/"],
+    icon: "🌐",
+    color: "blue"
+  },
+  "Backend Development": {
+    extensions: ["py", "rb", "php", "go", "rs", "java", "cs", "ex", "exs"],
+    configFiles: ["requirements.txt", "Gemfile", "composer.json", "go.mod", "Cargo.toml", "pom.xml", "build.gradle", "mix.exs"],
+    pathPatterns: ["api/", "server/", "backend/", "controllers/", "models/", "services/"],
+    icon: "⚙️",
+    color: "green"
+  },
+  "DevOps/Infrastructure": {
+    extensions: ["yml", "yaml", "tf", "hcl", "sh", "bash", "dockerfile"],
+    configFiles: ["Dockerfile", "docker-compose.yml", ".gitlab-ci.yml", "Jenkinsfile", "terraform.tf", "ansible.yml", "kubernetes.yml", "k8s.yml", ".github/workflows"],
+    pathPatterns: [".github/", "deploy/", "infrastructure/", "terraform/", "k8s/", "helm/"],
+    icon: "🚀",
+    color: "orange"
+  },
+  "Data Science/ML": {
+    extensions: ["ipynb", "py", "r", "rmd", "jl"],
+    configFiles: ["requirements.txt", "environment.yml", "setup.py", "pyproject.toml"],
+    pathPatterns: ["notebooks/", "data/", "models/", "training/", "datasets/"],
+    keywords: ["pandas", "numpy", "tensorflow", "pytorch", "sklearn", "keras", "matplotlib"],
+    icon: "📊",
+    color: "cyan"
+  },
+  "Database/SQL": {
+    extensions: ["sql", "prisma", "graphql", "gql"],
+    configFiles: ["prisma/schema.prisma", "knexfile.js", "sequelize.config.js", "typeorm.config"],
+    pathPatterns: ["migrations/", "seeds/", "schema/", "database/"],
+    icon: "🗄️",
+    color: "amber"
+  },
+  "Game Development": {
+    extensions: ["cs", "cpp", "c", "lua", "gd", "gdscript"],
+    configFiles: ["project.godot", "*.uproject", "*.unity"],
+    pathPatterns: ["Assets/", "Scripts/", "Scenes/", "Prefabs/"],
+    icon: "🎮",
+    color: "red"
+  },
+  "Full Stack": {
+    icon: "💻",
+    color: "indigo"
+  }
+};
+
+function detectExpertise(files, fileTypes) {
+  const scores = {};
+  const detectedTechs = new Set();
+
+  // Initialize scores
+  Object.keys(EXPERTISE_PATTERNS).forEach(expertise => {
+    scores[expertise] = 0;
+  });
+
+  // Analyze each file
+  files.forEach(file => {
+    const filename = file.filename || file;
+    const ext = safeExt(filename);
+    const lowerFilename = filename.toLowerCase();
+
+    Object.entries(EXPERTISE_PATTERNS).forEach(([expertise, patterns]) => {
+      // Check extensions
+      if (patterns.extensions?.includes(ext)) {
+        scores[expertise] += 2;
+        detectedTechs.add(ext.toUpperCase());
+      }
+
+      // Check config files
+      patterns.configFiles?.forEach(config => {
+        if (lowerFilename.includes(config.toLowerCase()) || lowerFilename.endsWith(config.toLowerCase())) {
+          scores[expertise] += 5;
+          detectedTechs.add(config);
+        }
+      });
+
+      // Check path patterns
+      patterns.pathPatterns?.forEach(pathPattern => {
+        if (lowerFilename.includes(pathPattern.toLowerCase())) {
+          scores[expertise] += 3;
+        }
+      });
+    });
+  });
+
+  // Also use fileTypes data for additional scoring
+  fileTypes.forEach(ft => {
+    const ext = ft.name.replace(".", "").toLowerCase();
+    Object.entries(EXPERTISE_PATTERNS).forEach(([expertise, patterns]) => {
+      if (patterns.extensions?.includes(ext)) {
+        scores[expertise] += ft.value; // Weight by frequency
+      }
+    });
+  });
+
+  // Sort by score and get top expertise areas
+  const sortedExpertise = Object.entries(scores)
+    .filter(([_, score]) => score > 0)
+    .sort((a, b) => b[1] - a[1]);
+
+  // If multiple areas have similar scores, might be Full Stack
+  const topScore = sortedExpertise[0]?.[1] || 0;
+  const significantAreas = sortedExpertise.filter(([_, score]) => score >= topScore * 0.5);
+
+  let primaryExpertise = "Full Stack";
+  let allExpertise = [];
+
+  if (sortedExpertise.length === 0) {
+    primaryExpertise = "General Development";
+    allExpertise = [{ name: "General Development", score: 0, icon: "💻", color: "gray" }];
+  } else if (significantAreas.length >= 3) {
+    primaryExpertise = "Full Stack";
+    allExpertise = significantAreas.map(([name, score]) => ({
+      name,
+      score,
+      icon: EXPERTISE_PATTERNS[name]?.icon || "💻",
+      color: EXPERTISE_PATTERNS[name]?.color || "gray"
+    }));
+  } else {
+    primaryExpertise = sortedExpertise[0][0];
+    allExpertise = sortedExpertise.slice(0, 4).map(([name, score]) => ({
+      name,
+      score,
+      icon: EXPERTISE_PATTERNS[name]?.icon || "💻",
+      color: EXPERTISE_PATTERNS[name]?.color || "gray"
+    }));
+  }
+
+  return {
+    primary: primaryExpertise,
+    primaryIcon: EXPERTISE_PATTERNS[primaryExpertise]?.icon || "💻",
+    primaryColor: EXPERTISE_PATTERNS[primaryExpertise]?.color || "gray",
+    all: allExpertise,
+    technologies: Array.from(detectedTechs).slice(0, 10)
+  };
+}
+
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
@@ -122,15 +271,15 @@ function calculateExperienceLevel(totalCommits, onTimePercentage, messageQuality
   else score += 2;
 
   // Message quality (25)
-  if (messageQuality >= 50) score += 25;
-  else if (messageQuality >= 40) score += 20;
-  else if (messageQuality >= 30) score += 15;
-  else score += 10;
+  if (messageQuality >= 40) score += 25;
+  else if (messageQuality >= 30) score += 20;
+  else if (messageQuality >= 20) score += 15;
+  else score += 5;
 
   // Consistency (20)
   if (consistency >= 70 && totalCommits > 100) score += 20;
   else if (consistency >= 60 && totalCommits > 50) score += 15;
-  else if (consistency >= 40 && totalCommits > 20) score += 10;
+  else if (consistency >= 40 && totalCommits > 30) score += 10;
   else score += 5;
 
   if (score >= 80) return { level: "Senior", tone: "purple", score };
@@ -270,6 +419,19 @@ export default function GitHubCommitAnalyzer() {
 
   // Developer panel state
   const [showDeveloperPanel, setShowDeveloperPanel] = useState(true);
+
+  // Stats dropdown state
+  const [expandedStats, setExpandedStats] = useState({
+    experience: true,
+    commits: false,
+    timing: false,
+    quality: false,
+    expertise: true,
+  });
+
+  const toggleStatSection = (section) => {
+    setExpandedStats(prev => ({ ...prev, [section]: !prev[section] }));
+  };
 
   // Jira integration state
   const [showJiraPanel, setShowJiraPanel] = useState(false);
@@ -447,8 +609,8 @@ export default function GitHubCommitAnalyzer() {
     return domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
   };
 
-  // Jira API proxy URL (runs on localhost:3001)
-  const JIRA_PROXY_URL = "http://localhost:3001/api/jira/proxy";
+  // Jira API proxy URL (runs on localhost:3002)
+  const JIRA_PROXY_URL = "http://localhost:3002/api/jira/proxy";
 
   // Jira API functions using proxy server to bypass CORS
   const getJiraAuthHeader = () => {
@@ -474,8 +636,19 @@ export default function GitHubCommitAnalyzer() {
       }),
     });
 
-    const result = await response.json();
-    return result;
+    // Handle empty response
+    const text = await response.text();
+    if (!text) {
+      return { ok: false, error: "Empty response from proxy server" };
+    }
+
+    try {
+      const result = JSON.parse(text);
+      return result;
+    } catch (e) {
+      console.error("Failed to parse proxy response:", text);
+      return { ok: false, error: `Invalid JSON response: ${text.substring(0, 100)}` };
+    }
   };
 
   // Fetch all Jira users only (simplified - no team tiles)
@@ -493,7 +666,7 @@ export default function GitHubCommitAnalyzer() {
     try {
       // First, check if proxy server is running
       try {
-        const healthCheck = await fetch("http://localhost:3001/api/health");
+        const healthCheck = await fetch("http://localhost:3002/api/health");
         if (!healthCheck.ok) throw new Error("Proxy not running");
       } catch {
         throw new Error("Proxy server not running. Please start it with: npm run server");
@@ -504,7 +677,8 @@ export default function GitHubCommitAnalyzer() {
       const usersResult = await jiraProxyFetch(usersUrl);
 
       if (!usersResult.ok) {
-        throw new Error("Failed to fetch Jira users. Please check your credentials.");
+        const errorMsg = usersResult.error || usersResult.message || "Unknown error";
+        throw new Error(`Failed to fetch Jira users: ${errorMsg}`);
       }
 
       if (Array.isArray(usersResult.data)) {
@@ -1138,7 +1312,7 @@ export default function GitHubCommitAnalyzer() {
 
         const message = String(c?.commit?.message || "");
         let messageScore = 0;
-        if (message.length > 10) messageScore += 25;
+        if (message.length > 10) messageScore += 10;
         if (message.length > 30) messageScore += 25;
         if (/^(feat|fix|docs|refactor|test|chore|style|perf):/i.test(message)) messageScore += 25;
         if (/#\d+/.test(message)) messageScore += 25;
@@ -1157,6 +1331,7 @@ export default function GitHubCommitAnalyzer() {
       let totalLinesDeleted = 0;
       const fileExtensions = {};
       const commitSizes = [];
+      const allFiles = []; // Collect all files for expertise detection
 
       let idx = 0;
       const workerCount = clamp(CONCURRENCY, 1, 12);
@@ -1182,6 +1357,7 @@ export default function GitHubCommitAnalyzer() {
                 json.files.forEach((f) => {
                   const ext = safeExt(f?.filename);
                   fileExtensions[ext] = (fileExtensions[ext] || 0) + 1;
+                  allFiles.push(f?.filename || ""); // Collect file paths
                 });
               }
             }
@@ -1252,6 +1428,9 @@ export default function GitHubCommitAnalyzer() {
         Math.round(consistencyScore)
       );
 
+      // Detect developer expertise based on files and file types
+      const expertise = detectExpertise(allFiles, topFileTypes);
+
       const hourlyData = hourlyDistribution.map((count, hour) => ({ hour: `${hour}:00`, commits: count }));
       const weekdayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
       const weekdayData = weekdayDistribution.map((count, day) => ({ day: weekdayNames[day], commits: count }));
@@ -1274,6 +1453,7 @@ export default function GitHubCommitAnalyzer() {
         commitSizeDistribution: sizeRanges,
         consistencyTimeline: consistencyTimeline.length ? consistencyTimeline : [{ commit: "#1", days: 0 }],
         experienceLevel,
+        expertise, // Developer expertise area
         hourlyData,
         weekdayData,
       };
@@ -1966,148 +2146,320 @@ export default function GitHubCommitAnalyzer() {
 
             {/* Full Report section for PDF export - wraps both table and detailed charts */}
             <div ref={reportRef}>
-            {/* Comparison Table */}
+            {/* Stats Dropdown Sections */}
             {hasResults && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
+                className="space-y-4"
               >
-                <div className="rounded-3xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-xl overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead>
-                        <tr className="border-b border-black/5 dark:border-white/10">
-                          <th className="px-6 py-4 text-left text-sm font-semibold text-gray-900 dark:text-zinc-100 bg-black/5 dark:bg-white/5">
-                            Metric
-                          </th>
+                {/* Developer Header Row */}
+                <div className="rounded-2xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg p-4">
+                  <div className="flex items-center gap-4 overflow-x-auto">
+                    <span className="text-sm font-medium text-gray-500 dark:text-zinc-400 min-w-[100px]">Developers:</span>
+                    {resultsArray.map((r) => (
+                      <div key={r.devId} className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-black/5 dark:bg-white/10">
+                        <div
+                          className="w-3 h-3 rounded-full shrink-0"
+                          style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
+                        />
+                        <span className="text-sm font-medium text-gray-900 dark:text-zinc-100 whitespace-nowrap">{r.owner}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Expertise Area Dropdown */}
+                <div className="rounded-2xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleStatSection("expertise")}
+                    className="w-full flex items-center justify-between p-4 hover:bg-black/5 dark:hover:bg-white/5 transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-lg">
+                        💻
+                      </div>
+                      <div className="text-left">
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">Developer Expertise</h3>
+                        <p className="text-xs text-gray-500 dark:text-zinc-400">Detected specialization based on code patterns</p>
+                      </div>
+                    </div>
+                    {expandedStats.expertise ? <ChevronUp size={20} className="text-gray-500" /> : <ChevronDown size={20} className="text-gray-500" />}
+                  </button>
+                  <AnimatePresence>
+                    {expandedStats.expertise && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="p-4 pt-0 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                           {resultsArray.map((r) => (
-                            <th
-                              key={r.devId}
-                              className="px-6 py-4 text-center text-sm font-semibold text-gray-900 dark:text-zinc-100 bg-black/5 dark:bg-white/5"
-                            >
-                              <div className="flex items-center justify-center gap-2">
+                            <div key={r.devId} className="rounded-xl border border-black/5 dark:border-white/10 bg-black/5 dark:bg-white/5 p-4">
+                              <div className="flex items-center gap-2 mb-3">
                                 <div
                                   className="w-3 h-3 rounded-full"
                                   style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
                                 />
-                                <span>{r.owner}/{r.repo}</span>
+                                <span className="text-sm font-semibold text-gray-900 dark:text-zinc-100">{r.owner}</span>
                               </div>
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {/* Experience Level */}
-                        <tr className="border-b border-black/5 dark:border-white/10">
-                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            <div className="flex items-center gap-2">
-                              <Award size={16} className="text-purple-500" />
-                              Experience Level
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-2xl">{r.expertise?.primaryIcon || "💻"}</span>
+                                <span className="text-lg font-bold text-gray-900 dark:text-zinc-100">{r.expertise?.primary || "General"}</span>
+                              </div>
+                              {r.expertise?.all?.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5 mt-2">
+                                  {r.expertise.all.slice(0, 4).map((exp, idx) => (
+                                    <span
+                                      key={idx}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-black/10 dark:bg-white/10 text-gray-700 dark:text-zinc-300"
+                                    >
+                                      {exp.icon} {exp.name.replace(" Development", "")}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                             </div>
-                          </td>
-                          {resultsArray.map((r) => (
-                            <td key={r.devId} className="px-6 py-4 text-center">
-                              <span className={`px-3 py-1 rounded-full text-sm font-semibold ${toneClasses(r.experienceLevel.tone).badge}`}>
-                                {r.experienceLevel.level}
-                              </span>
-                            </td>
                           ))}
-                        </tr>
-                        {/* Total Commits */}
-                        <tr className="border-b border-black/5 dark:border-white/10">
-                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            <div className="flex items-center gap-2">
-                              <GitCommit size={16} className="text-blue-500" />
-                              Total Commits
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* Experience Level Dropdown */}
+                <div className="rounded-2xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleStatSection("experience")}
+                    className="w-full flex items-center justify-between p-4 hover:bg-black/5 dark:hover:bg-white/5 transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-purple-500 to-pink-600 flex items-center justify-center">
+                        <Award size={20} className="text-white" />
+                      </div>
+                      <div className="text-left">
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">Experience Level</h3>
+                        <p className="text-xs text-gray-500 dark:text-zinc-400">Calculated from commits, quality & consistency</p>
+                      </div>
+                    </div>
+                    {expandedStats.experience ? <ChevronUp size={20} className="text-gray-500" /> : <ChevronDown size={20} className="text-gray-500" />}
+                  </button>
+                  <AnimatePresence>
+                    {expandedStats.experience && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="p-4 pt-0 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {resultsArray.map((r) => (
+                            <div key={r.devId} className="rounded-xl border border-black/5 dark:border-white/10 bg-black/5 dark:bg-white/5 p-4">
+                              <div className="flex items-center gap-2 mb-3">
+                                <div
+                                  className="w-3 h-3 rounded-full"
+                                  style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
+                                />
+                                <span className="text-sm font-semibold text-gray-900 dark:text-zinc-100">{r.owner}</span>
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <span className={`px-3 py-1.5 rounded-full text-sm font-bold ${toneClasses(r.experienceLevel.tone).badge}`}>
+                                  {r.experienceLevel.level}
+                                </span>
+                                <span className="text-2xl font-bold text-gray-900 dark:text-zinc-100">{r.experienceLevel.score}</span>
+                              </div>
+                              <div className="mt-2">
+                                <ProgressBar value={r.experienceLevel.score} />
+                              </div>
                             </div>
-                          </td>
-                          {resultsArray.map((r) => (
-                            <td key={r.devId} className="px-6 py-4 text-center text-lg font-semibold text-gray-900 dark:text-zinc-100">
-                              <AnimatedNumber value={r.totalCommits} />
-                            </td>
                           ))}
-                        </tr>
-                        {/* On-Time Rate */}
-                        <tr className="border-b border-black/5 dark:border-white/10">
-                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            <div className="flex items-center gap-2">
-                              <Clock size={16} className="text-emerald-500" />
-                              On-Time Rate
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* Commit Stats Dropdown */}
+                <div className="rounded-2xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleStatSection("commits")}
+                    className="w-full flex items-center justify-between p-4 hover:bg-black/5 dark:hover:bg-white/5 transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center">
+                        <GitCommit size={20} className="text-white" />
+                      </div>
+                      <div className="text-left">
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">Commit Statistics</h3>
+                        <p className="text-xs text-gray-500 dark:text-zinc-400">Total commits, lines added/deleted</p>
+                      </div>
+                    </div>
+                    {expandedStats.commits ? <ChevronUp size={20} className="text-gray-500" /> : <ChevronDown size={20} className="text-gray-500" />}
+                  </button>
+                  <AnimatePresence>
+                    {expandedStats.commits && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="p-4 pt-0 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {resultsArray.map((r) => (
+                            <div key={r.devId} className="rounded-xl border border-black/5 dark:border-white/10 bg-black/5 dark:bg-white/5 p-4">
+                              <div className="flex items-center gap-2 mb-3">
+                                <div
+                                  className="w-3 h-3 rounded-full"
+                                  style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
+                                />
+                                <span className="text-sm font-semibold text-gray-900 dark:text-zinc-100">{r.owner}</span>
+                              </div>
+                              <div className="text-3xl font-bold text-gray-900 dark:text-zinc-100 mb-2">
+                                <AnimatedNumber value={r.totalCommits} />
+                                <span className="text-sm font-normal text-gray-500 dark:text-zinc-400 ml-2">commits</span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-sm">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-emerald-600 font-semibold">+{formatNumber(r.totalLinesAdded)}</span>
+                                  <span className="text-gray-500 dark:text-zinc-400">added</span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-red-500 font-semibold">-{formatNumber(r.totalLinesDeleted)}</span>
+                                  <span className="text-gray-500 dark:text-zinc-400">deleted</span>
+                                </div>
+                              </div>
+                              <div className="mt-2 text-xs text-gray-500 dark:text-zinc-400">
+                                Avg: {formatNumber(r.avgCommitSize)} lines/commit
+                              </div>
                             </div>
-                          </td>
-                          {resultsArray.map((r) => (
-                            <td key={r.devId} className="px-6 py-4 text-center text-lg font-semibold text-emerald-600">
-                              {r.onTimePercentage}%
-                            </td>
                           ))}
-                        </tr>
-                        {/* Message Quality */}
-                        <tr className="border-b border-black/5 dark:border-white/10">
-                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            <div className="flex items-center gap-2">
-                              <MessageSquare size={16} className="text-purple-500" />
-                              Message Quality
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* Timing & Consistency Dropdown */}
+                <div className="rounded-2xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleStatSection("timing")}
+                    className="w-full flex items-center justify-between p-4 hover:bg-black/5 dark:hover:bg-white/5 transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center">
+                        <Clock size={20} className="text-white" />
+                      </div>
+                      <div className="text-left">
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">Timing & Consistency</h3>
+                        <p className="text-xs text-gray-500 dark:text-zinc-400">Work hours and commit frequency</p>
+                      </div>
+                    </div>
+                    {expandedStats.timing ? <ChevronUp size={20} className="text-gray-500" /> : <ChevronDown size={20} className="text-gray-500" />}
+                  </button>
+                  <AnimatePresence>
+                    {expandedStats.timing && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="p-4 pt-0 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {resultsArray.map((r) => (
+                            <div key={r.devId} className="rounded-xl border border-black/5 dark:border-white/10 bg-black/5 dark:bg-white/5 p-4">
+                              <div className="flex items-center gap-2 mb-3">
+                                <div
+                                  className="w-3 h-3 rounded-full"
+                                  style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
+                                />
+                                <span className="text-sm font-semibold text-gray-900 dark:text-zinc-100">{r.owner}</span>
+                              </div>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <p className="text-xs text-gray-500 dark:text-zinc-400 mb-1">On-Time Rate</p>
+                                  <p className="text-2xl font-bold text-emerald-600">{r.onTimePercentage}%</p>
+                                </div>
+                                <div>
+                                  <p className="text-xs text-gray-500 dark:text-zinc-400 mb-1">Consistency</p>
+                                  <p className="text-2xl font-bold text-blue-600">{r.consistencyScore}</p>
+                                </div>
+                              </div>
+                              <div className="mt-3 flex gap-2 text-xs">
+                                <span className="px-2 py-1 rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300">
+                                  {r.onTimeCount} on-time
+                                </span>
+                                <span className="px-2 py-1 rounded-full bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-300">
+                                  {r.lateCount} late
+                                </span>
+                              </div>
                             </div>
-                          </td>
-                          {resultsArray.map((r) => (
-                            <td key={r.devId} className="px-6 py-4 text-center text-lg font-semibold text-purple-600">
-                              {r.messageQualityScore}
-                            </td>
                           ))}
-                        </tr>
-                        {/* Consistency */}
-                        <tr className="border-b border-black/5 dark:border-white/10">
-                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            <div className="flex items-center gap-2">
-                              <Activity size={16} className="text-blue-500" />
-                              Consistency Score
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* Code Quality Dropdown */}
+                <div className="rounded-2xl border border-black/5 dark:border-white/10 bg-white/70 dark:bg-white/5 backdrop-blur-xl shadow-lg overflow-hidden">
+                  <button
+                    onClick={() => toggleStatSection("quality")}
+                    className="w-full flex items-center justify-between p-4 hover:bg-black/5 dark:hover:bg-white/5 transition"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center">
+                        <MessageSquare size={20} className="text-white" />
+                      </div>
+                      <div className="text-left">
+                        <h3 className="text-base font-semibold text-gray-900 dark:text-zinc-100">Code Quality</h3>
+                        <p className="text-xs text-gray-500 dark:text-zinc-400">Message quality and file diversity</p>
+                      </div>
+                    </div>
+                    {expandedStats.quality ? <ChevronUp size={20} className="text-gray-500" /> : <ChevronDown size={20} className="text-gray-500" />}
+                  </button>
+                  <AnimatePresence>
+                    {expandedStats.quality && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="p-4 pt-0 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {resultsArray.map((r) => (
+                            <div key={r.devId} className="rounded-xl border border-black/5 dark:border-white/10 bg-black/5 dark:bg-white/5 p-4">
+                              <div className="flex items-center gap-2 mb-3">
+                                <div
+                                  className="w-3 h-3 rounded-full"
+                                  style={{ backgroundColor: DEVELOPER_COLORS[r.devIndex % DEVELOPER_COLORS.length] }}
+                                />
+                                <span className="text-sm font-semibold text-gray-900 dark:text-zinc-100">{r.owner}</span>
+                              </div>
+                              <div className="mb-3">
+                                <p className="text-xs text-gray-500 dark:text-zinc-400 mb-1">Message Quality Score</p>
+                                <p className="text-2xl font-bold text-purple-600">{r.messageQualityScore}</p>
+                              </div>
+                              <div>
+                                <p className="text-xs text-gray-500 dark:text-zinc-400 mb-2">Top File Types</p>
+                                <div className="flex flex-wrap gap-1">
+                                  {r.fileTypes.slice(0, 5).map((ft, idx) => (
+                                    <span
+                                      key={idx}
+                                      className="px-2 py-0.5 rounded-full text-xs font-medium"
+                                      style={{ backgroundColor: `${FILE_COLORS[idx % FILE_COLORS.length]}20`, color: FILE_COLORS[idx % FILE_COLORS.length] }}
+                                    >
+                                      {ft.name}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
                             </div>
-                          </td>
-                          {resultsArray.map((r) => (
-                            <td key={r.devId} className="px-6 py-4 text-center text-lg font-semibold text-blue-600">
-                              {r.consistencyScore}
-                            </td>
                           ))}
-                        </tr>
-                        {/* Avg Commit Size */}
-                        <tr className="border-b border-black/5 dark:border-white/10">
-                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            <div className="flex items-center gap-2">
-                              <FileCode size={16} className="text-amber-500" />
-                              Avg Commit Size
-                            </div>
-                          </td>
-                          {resultsArray.map((r) => (
-                            <td key={r.devId} className="px-6 py-4 text-center text-sm text-gray-900 dark:text-zinc-100">
-                              {formatNumber(r.avgCommitSize)} lines
-                            </td>
-                          ))}
-                        </tr>
-                        {/* Lines Added */}
-                        <tr className="border-b border-black/5 dark:border-white/10">
-                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            Lines Added
-                          </td>
-                          {resultsArray.map((r) => (
-                            <td key={r.devId} className="px-6 py-4 text-center text-sm text-emerald-600 font-medium">
-                              +{formatNumber(r.totalLinesAdded)}
-                            </td>
-                          ))}
-                        </tr>
-                        {/* Lines Deleted */}
-                        <tr>
-                          <td className="px-6 py-4 text-sm font-medium text-gray-700 dark:text-zinc-300">
-                            Lines Deleted
-                          </td>
-                          {resultsArray.map((r) => (
-                            <td key={r.devId} className="px-6 py-4 text-center text-sm text-red-500 font-medium">
-                              -{formatNumber(r.totalLinesDeleted)}
-                            </td>
-                          ))}
-                        </tr>
-                      </tbody>
-                    </table>
-                  </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               </motion.div>
             )}
